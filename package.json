@@ -6,6 +6,7 @@
   "scripts": {
     "build": "vite build",
     "watch": "vite build --watch",
+    "test:term": "node --test test/terminal/*.test.js",
     "start": "electron .",
     "dev": "vite build && electron .",
     "rebuild": "node scripts/rebuild-node-pty.js",

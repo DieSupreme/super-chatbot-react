@@ -293,3 +293,8 @@ footer { display:flex; gap:10px; padding:12px 16px; background:var(--panel); bor
 
 /* active state for the header toggle button */
 header button.ghost.active { color:var(--text); border-color:var(--accent); }
+
+.term-tab .pin { opacity: 0.35; margin-left: 6px; cursor: pointer; font-size: 11px; }
+.term-tab .pin.on { opacity: 1; }
+.term-tab .pin:hover { opacity: 0.8; }
+.term-quit-all { margin-left: auto; }
