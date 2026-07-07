@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer, webUtils, clipboard } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 // Route pty output/exit to the right session's callback through a single shared
 // listener each (instead of one ipcRenderer listener per terminal panel), keyed
@@ -33,10 +33,12 @@ contextBridge.exposeInMainWorld('api', {
   readFiles: (paths) => ipcRenderer.invoke('files:read', paths),
   // Electron 32+ removed File.path — this is the supported way to get a dropped file's disk path
   getPathForFile: (file) => { try { return webUtils.getPathForFile(file); } catch (_) { return null; } },
-  // native clipboard (used by the embedded terminal so Ctrl+V works regardless of
-  // whether an Electron edit-menu accelerator is wired up)
-  readClipboard: () => { try { return clipboard.readText(); } catch (_) { return ''; } },
-  writeClipboard: (t) => { try { clipboard.writeText(t); } catch (_) {} },
+  // native clipboard (used by the embedded terminal so Ctrl+C/Ctrl+V work
+  // regardless of whether an Electron edit-menu accelerator is wired up). The
+  // `clipboard` module is not exposed to sandboxed preloads, so hop to main:
+  // read is synchronous (the caller uses the value inline), write is send-only.
+  readClipboard: () => { try { return ipcRenderer.sendSync('clipboard:read'); } catch (_) { return ''; } },
+  writeClipboard: (t) => { try { ipcRenderer.send('clipboard:write', t); } catch (_) {} },
   // allow-list editing
   allowList: () => ipcRenderer.invoke('allow:list'),
   allowAdd: () => ipcRenderer.invoke('allow:add'),

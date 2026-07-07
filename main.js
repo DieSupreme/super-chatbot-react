@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, safeStorage, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, safeStorage, shell, clipboard } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const zlib = require('zlib');
@@ -190,6 +190,18 @@ ipcMain.handle('files:pick', async () => {
 ipcMain.handle('files:read', (_e, paths) => {
   if (!Array.isArray(paths)) return { ok: true, files: [] };
   return { ok: true, files: paths.flatMap(p => { const r = readOne(p); return Array.isArray(r) ? r : [r]; }) };
+});
+
+// ---------- Native clipboard ----------
+// The `clipboard` module isn't available in the sandboxed preload (only
+// contextBridge/ipcRenderer/etc. are), so the embedded terminal's copy/paste
+// must hop to main. Read is synchronous (the renderer uses the value inline to
+// feed term.paste), write is fire-and-forget.
+ipcMain.on('clipboard:read', (e) => {
+  try { e.returnValue = clipboard.readText(); } catch (_) { e.returnValue = ''; }
+});
+ipcMain.on('clipboard:write', (_e, text) => {
+  try { clipboard.writeText(typeof text === 'string' ? text : ''); } catch (_) {}
 });
 
 // ---------- Allow-list management for editable files ----------
