@@ -1,6 +1,8 @@
-// TerminalPanel — the xterm.js widget. Creates one PTY session in main via the
-// `api.term` bridge, pipes keystrokes -> pty and pty output -> screen, keeps the
-// pty sized to the visible area, and tears everything down on unmount.
+// TerminalPanel — the xterm.js widget. Either creates a new PTY session in main
+// or reattaches to an existing daemon session (restored pinned tabs), via the
+// `api.term` bridge. Pipes keystrokes -> pty and pty output -> screen, keeps the
+// pty sized to the visible area. Session lifecycle (kill) is owned by
+// persistence / explicit tab-close, not by this component's unmount.
 //
 // node-pty is never imported here; the renderer only speaks the term IPC surface.
 import React, { useEffect, useRef, useCallback } from 'react';
@@ -17,10 +19,13 @@ const THEME = {
 };
 
 // `active` controls sizing: xterm/fit can't measure a display:none element, so we
-// re-fit whenever the panel becomes visible. `initialCommand` runs once at start;
-// `initialCwd` is the folder to spawn in; `onResolvedCwd` reports where the pty
-// actually landed (main may fall back to home).
-export default function TerminalPanel({ active, initialCommand, initialCwd, onResolvedCwd }) {
+// re-fit whenever the panel becomes visible. `initialCommand` runs once at start
+// (only for freshly-created sessions); `initialCwd` is the folder to spawn in;
+// `onResolvedCwd` reports where the pty actually landed (main may fall back to
+// home). `sessionId`, when set, reattaches to that existing daemon session
+// instead of creating a new one; `onSession` reports the id of a freshly
+// created session back to the caller (e.g. so it can be persisted).
+export default function TerminalPanel({ active, initialCommand, initialCwd, onResolvedCwd, sessionId, onSession }) {
   const hostRef = useRef(null);       // the DOM node xterm mounts into
   const termRef = useRef(null);       // xterm instance
   const fitRef = useRef(null);        // fit addon
@@ -124,38 +129,59 @@ export default function TerminalPanel({ active, initialCommand, initialCwd, onRe
     host.addEventListener('contextmenu', onContextMenu);
 
     // Attach the keystroke handler up front and buffer input until the session id
-    // is known, so keys typed before create() resolves are not lost.
+    // is known, so keys typed before the session resolves are not lost.
     term.onData((data) => {
       if (sessionRef.current != null) api.term.write(sessionRef.current, data);
       else inputBuf.push(data);
     });
 
-    // Create the pty sized to the current fit, then wire the data paths.
-    (async () => {
-      const r = await api.term.create({ cols: term.cols, rows: term.rows, cwd: initialCwd || undefined });
-      if (disposed) { if (r && r.ok) api.term.kill(r.id); return; }
-      if (!r || !r.ok) { term.writeln('\r\n\x1b[31mFailed to start terminal: ' + (r && r.error || 'unknown') + '\x1b[0m'); return; }
-      sessionRef.current = r.id;
+    // Bind this panel to a daemon session: either reattach to an existing one
+    // (restored pinned tab) or create a fresh one. Both then replay the ring so
+    // the banner / prior scrollback shows, wire live output, flush buffered keys,
+    // and nudge a resize so full-screen TUIs (claude, vim) repaint.
+    const bind = async () => {
+      let id = sessionId;
+      let resolvedCwd = initialCwd || '';
+      let fallback = false;
+      const reattaching = id != null;
+
+      if (!reattaching) {
+        const r = await api.term.create({ cols: term.cols, rows: term.rows, cwd: initialCwd || undefined, command: initialCommand || '' });
+        if (disposed) { if (r && r.ok) api.term.kill(r.id); return; }
+        if (!r || !r.ok) { term.writeln('\r\n\x1b[31mFailed to start terminal: ' + (r && r.error || 'unknown') + '\x1b[0m'); return; }
+        id = r.id; resolvedCwd = r.cwd; fallback = !!r.cwdFallback;
+      }
+
+      sessionRef.current = id;
+      if (onSession) onSession(id);
 
       // Wire output/exit BEFORE telling main to stream, so the buffered banner /
       // first prompt (held in main until now) is not missed.
-      offData = api.term.onData(r.id, (data) => term.write(data));
-      offExit = api.term.onExit(r.id, ({ exitCode }) => {
+      offData = api.term.onData(id, (data) => term.write(data));
+      offExit = api.term.onExit(id, ({ exitCode }) => {
         sessionRef.current = null;
         term.writeln(`\r\n\x1b[90m[process exited${typeof exitCode === 'number' ? ' with code ' + exitCode : ''}]\x1b[0m`);
       });
 
-      // flush any keystrokes typed during creation, then release main's buffer
-      for (const d of inputBuf) api.term.write(r.id, d);
-      inputBuf = [];
-      api.term.start(r.id);
+      // Replay recent output for this session (banner or prior scrollback).
+      const re = await api.term.reattach(id);
+      if (disposed) return;
+      if (re && re.ok && re.ring) term.write(re.ring);
 
-      // run this instance's launch command once, as if typed at the fresh prompt
-      if (initialCommand) api.term.write(r.id, initialCommand + '\r');
+      // Flush keys typed while binding.
+      for (const d of inputBuf) api.term.write(id, d);
+      inputBuf = [];
+
+      // Fresh sessions run their launch command once; reattached ones must not.
+      if (!reattaching && initialCommand) api.term.write(id, initialCommand + '\r');
+
       // report where the pty actually started (may differ from what was requested)
-      if (onResolvedCwd) onResolvedCwd({ cwd: r.cwd, fallback: !!r.cwdFallback });
+      if (onResolvedCwd) onResolvedCwd({ cwd: resolvedCwd, fallback });
+      // Nudge a repaint for TUIs by resizing to current fit.
+      try { refit(); } catch (_) {}
       term.focus();
-    })();
+    };
+    bind();
 
     // Keep the pty's cols/rows matched to the widget (panel + window resize).
     const applyFit = () => { if (activeRef.current) refit(); };   // can't measure a hidden panel
@@ -163,7 +189,8 @@ export default function TerminalPanel({ active, initialCommand, initialCwd, onRe
     resizeObserver.observe(hostRef.current);
     window.addEventListener('resize', applyFit);
 
-    // Cleanup: stop listeners, kill the pty, dispose xterm. No leaked process.
+    // Cleanup: stop listeners, dispose xterm. The pty itself is NOT killed here —
+    // persistence and tab-close (✕) own the session lifecycle now.
     return () => {
       disposed = true;
       if (host) host.removeEventListener('contextmenu', onContextMenu);
@@ -171,7 +198,9 @@ export default function TerminalPanel({ active, initialCommand, initialCwd, onRe
       if (resizeObserver) resizeObserver.disconnect();
       if (offData) offData();
       if (offExit) offExit();
-      if (sessionRef.current != null) { api.term.kill(sessionRef.current); sessionRef.current = null; }
+      // Do NOT kill the session on unmount — persistence and tab-close (✕) own the
+      // session lifecycle now. Just detach this panel's listeners.
+      sessionRef.current = null;
       try { term.dispose(); } catch (_) {}
       termRef.current = null;
     };
