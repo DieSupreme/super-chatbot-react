@@ -17,14 +17,16 @@
 // active), so switching tabs — or toggling away to the chat view — never loses
 // state or stops a session. A pty is killed when its tab is closed (✕), when a
 // folder change respawns it, or when the app quits.
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import TerminalPanel from './TerminalPanel.jsx';
 import api from '../api.js';
 import { LAUNCHERS } from '../terminal/launchers.js';
 
 // cwd '' means "home (default)". cwdDraft is the editable bar value; cwd is the
-// applied value the pty spawns with; gen bumps to force a restart.
-const makeShell = () => ({ key: 'shell', label: 'Shell', command: null, cwd: '', cwdDraft: '', gen: 0 });
+// applied value the pty spawns with; gen bumps to force a restart. sessionId is
+// the daemon session bound to this instance (null until created/reattached);
+// pinned marks it to survive app close and be restored on next launch.
+const makeShell = () => ({ key: 'shell', label: 'Shell', command: null, cwd: '', cwdDraft: '', gen: 0, sessionId: null, pinned: false });
 
 export default function TerminalDock({ active, onToast }) {
   const [instances, setInstances] = useState([makeShell()]);
@@ -34,17 +36,95 @@ export default function TerminalDock({ active, onToast }) {
   const isOpen = useCallback((key) => instances.some(i => i.key === key), [instances]);
   const patch = useCallback((key, p) => setInstances(prev => prev.map(i => i.key === key ? { ...i, ...p } : i)), []);
 
+  // Persist the pinned tabs' metadata so a pinned tab whose process later died
+  // (force-kill / reboot) can be respawned fresh on a future launch.
+  const persistPinned = useCallback((list) => {
+    const pinned = list.filter(i => i.pinned).map(i => ({ sessionId: i.sessionId, key: i.key, label: i.label, command: i.command, cwd: i.cwd }));
+    api.getSettings().then(r => {
+      const s = (r && r.settings) || {};
+      s.pinnedTerminals = pinned;
+      api.saveSettings(s);
+    });
+  }, []);
+
+  // On mount, reconcile saved pinned tabs against sessions still alive in the daemon.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const [listRes, setRes] = await Promise.all([api.term.list(), api.getSettings()]);
+      if (cancelled) return;
+      const live = (listRes && listRes.sessions) || [];
+      const saved = ((setRes && setRes.settings && setRes.settings.pinnedTerminals) || []);
+      const restored = [];
+      for (const meta of saved) {
+        const liveMatch = live.find(s => s.id === meta.sessionId);
+        if (liveMatch) {
+          restored.push({ key: meta.key, label: meta.label, command: meta.command, cwd: liveMatch.cwd, cwdDraft: liveMatch.cwd, gen: 0, sessionId: liveMatch.id, pinned: true });
+        } else {
+          // Process gone — respawn fresh (create path) and tell the user.
+          restored.push({ key: meta.key, label: meta.label, command: meta.command, cwd: meta.cwd || '', cwdDraft: meta.cwd || '', gen: 0, sessionId: null, pinned: true });
+          if (onToast) onToast(`${meta.label}: reconnected as a fresh session`, 'warn');
+        }
+      }
+      if (restored.length) setInstances(prev => {
+        const have = new Set(prev.map(i => i.key));
+        return [...prev, ...restored.filter(r => !have.has(r.key))];
+      });
+    })();
+    return () => { cancelled = true; };
+  }, [onToast]);
+
   const openTool = useCallback((l) => {
     setInstances(prev => prev.some(i => i.key === l.label)
       ? prev
-      : [...prev, { key: l.label, label: l.label, command: l.command, cwd: '', cwdDraft: '', gen: 0 }]);
+      : [...prev, { key: l.label, label: l.label, command: l.command, cwd: '', cwdDraft: '', gen: 0, sessionId: null, pinned: false }]);
     setActiveKey(l.label);
   }, []);
 
   const closeInstance = useCallback((key) => {
-    setInstances(prev => prev.filter(i => i.key !== key));
+    setInstances(prev => {
+      const inst = prev.find(i => i.key === key);
+      if (inst && inst.sessionId != null) api.term.kill(inst.sessionId);
+      const next = prev.filter(i => i.key !== key);
+      persistPinned(next);
+      return next;
+    });
     setActiveKey(prev => (prev === key ? 'shell' : prev));
-  }, []);
+  }, [persistPinned]);
+
+  const togglePin = useCallback((key) => {
+    setInstances(prev => {
+      const next = prev.map(i => {
+        if (i.key !== key) return i;
+        const pinned = !i.pinned;
+        if (i.sessionId != null) api.term.setPinned(i.sessionId, pinned);
+        return { ...i, pinned };
+      });
+      persistPinned(next);
+      return next;
+    });
+  }, [persistPinned]);
+
+  const setSession = useCallback((key, id) => {
+    setInstances(prev => {
+      const next = prev.map(i => i.key === key ? { ...i, sessionId: id } : i);
+      const inst = next.find(i => i.key === key);
+      if (inst && inst.pinned) api.term.setPinned(id, true);
+      persistPinned(next);
+      return next;
+    });
+  }, [persistPinned]);
+
+  const quitAll = useCallback(async () => {
+    await api.term.quitAll();
+    setInstances([makeShell()]);
+    setActiveKey('shell');
+    const r = await api.getSettings();
+    const s = (r && r.settings) || {};
+    s.pinnedTerminals = [];
+    api.saveSettings(s);
+    if (onToast) onToast('All terminals stopped', 'ok');
+  }, [onToast]);
 
   // Apply a folder to an instance: validate it exists, then set cwd + bump gen so
   // the TerminalPanel remounts (kill + respawn in the new folder, re-run command).
@@ -56,7 +136,9 @@ export default function TerminalDock({ active, onToast }) {
       // if validation itself failed (e.g. no Electron), let main be the authority.
       if (r && r.ok && !r.exists) { onToast && onToast('Folder not found: ' + p, 'warn'); return; }
     }
-    setInstances(prev => prev.map(i => i.key === key ? { ...i, cwd: p, cwdDraft: p, gen: i.gen + 1 } : i));
+    // Changing the folder respawns: forget the old session id so the panel creates
+    // a new one, and bump gen to remount.
+    setInstances(prev => prev.map(i => i.key === key ? { ...i, cwd: p, cwdDraft: p, sessionId: null, gen: i.gen + 1 } : i));
   }, [onToast]);
 
   const browse = useCallback(async (key) => {
@@ -74,28 +156,41 @@ export default function TerminalDock({ active, onToast }) {
     if (fallback && onToast) onToast('Folder unavailable — opened your home folder instead', 'warn');
   }, [onToast]);
 
+  const renderPin = (inst) => (
+    <span className={'pin' + (inst.pinned ? ' on' : '')}
+      title={inst.pinned ? 'Pinned — survives app close. Click to unpin.' : 'Pin — keep running after the app closes.'}
+      onClick={(e) => { e.stopPropagation(); togglePin(inst.key); }}>📍</span>
+  );
+
   return (
     <>
       <div className="term-tabs">
-        <div className={'term-tab' + (activeKey === 'shell' ? ' active' : '')}
-          onClick={() => setActiveKey('shell')}>
+        <div className={'term-tab' + (activeKey === 'shell' ? ' active' : '')} onClick={() => setActiveKey('shell')}>
           <span className="lbl">Shell</span>
+          {renderPin(instances.find(i => i.key === 'shell') || makeShell())}
         </div>
+        {instances.filter(i => i.key !== 'shell' && !LAUNCHERS.some(l => l.label === i.key)).map(inst => (
+          <div key={inst.key} className={'term-tab open' + (activeKey === inst.key ? ' active' : '')} onClick={() => setActiveKey(inst.key)}>
+            <span className="lbl">{inst.label}</span>
+            {renderPin(inst)}
+            <span className="x" title={'Close ' + inst.label} onClick={(e) => { e.stopPropagation(); closeInstance(inst.key); }}>✕</span>
+          </div>
+        ))}
         {LAUNCHERS.map(l => {
           const open = isOpen(l.label);
+          const inst = instances.find(i => i.key === l.label);
           return (
             <div key={l.label}
               className={'term-tab' + (activeKey === l.label ? ' active' : '') + (open ? ' open' : '')}
               title={open ? 'Switch to ' + l.label : 'Launch: ' + l.command}
               onClick={() => openTool(l)}>
               <span className="lbl">{l.label}</span>
-              {open && (
-                <span className="x" title={'Close ' + l.label}
-                  onClick={(e) => { e.stopPropagation(); closeInstance(l.label); }}>✕</span>
-              )}
+              {open && inst && renderPin(inst)}
+              {open && (<span className="x" title={'Close ' + l.label} onClick={(e) => { e.stopPropagation(); closeInstance(l.label); }}>✕</span>)}
             </div>
           );
         })}
+        <button className="ghost term-quit-all" title="Stop and kill every terminal (including pinned)" onClick={quitAll}>Quit all</button>
       </div>
 
       {/* per-instance working folder — reflects/edits the active instance */}
@@ -118,6 +213,8 @@ export default function TerminalDock({ active, onToast }) {
               {/* key includes gen so applying a folder remounts -> respawns in new cwd */}
               <TerminalPanel key={inst.key + ':' + inst.gen}
                 active={show} initialCommand={inst.command} initialCwd={inst.cwd}
+                sessionId={inst.sessionId}
+                onSession={(id) => setSession(inst.key, id)}
                 onResolvedCwd={(info) => handleResolvedCwd(inst.key, info)} />
             </div>
           );
