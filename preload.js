@@ -50,14 +50,16 @@ contextBridge.exposeInMainWorld('api', {
   // embedded terminal (node-pty lives only in main; this is the whole surface)
   term: {
     create: (opts) => ipcRenderer.invoke('term:create', opts),
+    reattach: (id) => ipcRenderer.invoke('term:reattach', id),
     write: (id, data) => ipcRenderer.send('term:write', { id, data }),
     resize: (id, cols, rows) => ipcRenderer.send('term:resize', { id, cols, rows }),
     kill: (id) => ipcRenderer.invoke('term:kill', id),
-    start: (id) => ipcRenderer.send('term:start', id),
+    list: () => ipcRenderer.invoke('term:list'),
+    setPinned: (id, pinned) => ipcRenderer.invoke('term:setPinned', { id, pinned }),
+    quitAll: () => ipcRenderer.invoke('term:quitAll'),
     pickFolder: () => ipcRenderer.invoke('term:pickFolder'),
     pathExists: (p) => ipcRenderer.invoke('term:pathExists', p),
-    // per-session data/exit registration; each returns a disposer that unhooks
-    // just this session (no per-panel global listener).
+    // per-session data/exit registration; each returns a disposer.
     onData: (id, cb) => { termDataCbs.set(id, cb); return () => termDataCbs.delete(id); },
     onExit: (id, cb) => { termExitCbs.set(id, cb); return () => termExitCbs.delete(id); }
   }
