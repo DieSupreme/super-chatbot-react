@@ -36,6 +36,18 @@ function formatPathsForPty(paths) {
   return paths.map(p => (/\s/.test(p) ? `"${p}"` : p)).join(' ') + '\r';
 }
 
+function normalizeFolderPath(raw) {
+  let p = (raw ?? '').trim();
+  if ((p.startsWith('"') && p.endsWith('"')) || (p.startsWith("'") && p.endsWith("'"))) {
+    p = p.slice(1, -1).trim();
+  }
+  if (/^file:\/\//i.test(p)) {
+    try { p = decodeURIComponent(p.replace(/^file:\/\//i, '')); } catch (_) {}
+    if (/^\/[A-Za-z]:/.test(p)) p = p.slice(1);
+  }
+  return p;
+}
+
 export default function TerminalDock({ active, onToast }) {
   const [instances, setInstances] = useState([makeShell()]);
   const [activeKey, setActiveKey] = useState('shell');
@@ -196,7 +208,7 @@ export default function TerminalDock({ active, onToast }) {
   }, [onToast]);
 
   const applyCwd = useCallback(async (key, rawPath) => {
-    const p = (rawPath ?? '').trim();
+    const p = normalizeFolderPath(rawPath);
     if (p) {
       const r = await api.term.pathExists(p);
       if (r && r.ok && !r.exists) { onToast && onToast('Folder not found: ' + p, 'warn'); return; }
@@ -216,7 +228,15 @@ export default function TerminalDock({ active, onToast }) {
   const browse = useCallback(async (key) => {
     const r = await api.term.pickFolder();
     if (r && r.ok && r.path) applyCwd(key, r.path);
-  }, [applyCwd]);
+    else if (r && r.error && onToast) onToast('Could not open folder picker: ' + r.error, 'warn');
+  }, [applyCwd, onToast]);
+
+  const onCwdPaste = useCallback((e) => {
+    const text = e.clipboardData?.getData('text');
+    if (!text) return;
+    e.preventDefault();
+    patch(activeKey, { cwdDraft: normalizeFolderPath(text) });
+  }, [activeKey, patch]);
 
   const handleResolvedCwd = useCallback((key, { cwd, fallback }) => {
     setInstances(prev => prev.map(i => i.key === key
@@ -327,9 +347,13 @@ export default function TerminalDock({ active, onToast }) {
           placeholder="Working folder for this instance — blank = home. Enter to (re)open here."
           value={activeInst.cwdDraft}
           onChange={(e) => patch(activeKey, { cwdDraft: e.target.value })}
-          onKeyDown={(e) => { if (e.key === 'Enter') applyCwd(activeKey, activeInst.cwdDraft); }} />
-        <button className="ghost" onClick={() => browse(activeKey)}>Browse…</button>
-        <button className="ghost" onClick={() => applyCwd(activeKey, activeInst.cwdDraft)}>Open</button>
+          onPaste={onCwdPaste}
+          onKeyDown={(e) => {
+            e.stopPropagation();
+            if (e.key === 'Enter') applyCwd(activeKey, activeInst.cwdDraft);
+          }} />
+        <button type="button" className="ghost" onClick={() => browse(activeKey)}>Browse…</button>
+        <button type="button" className="ghost" onClick={() => applyCwd(activeKey, activeInst.cwdDraft)}>Open</button>
       </div>
 
       <div className="term-stack" ref={stackRef}>
@@ -344,7 +368,8 @@ export default function TerminalDock({ active, onToast }) {
         {restored && instances.map(inst => {
           const show = active && activeKey === inst.key;
           return (
-            <div key={inst.key} className="term-slot" style={{ display: show ? 'flex' : 'none' }}>
+            <div key={inst.key} className="term-slot"
+              style={{ display: 'flex', visibility: show ? 'visible' : 'hidden', zIndex: show ? 1 : 0 }}>
               <TerminalPanel key={inst.key + ':' + inst.gen}
                 active={show} initialCommand={inst.command} initialCwd={inst.cwd}
                 sessionId={inst.sessionId}
@@ -353,6 +378,9 @@ export default function TerminalDock({ active, onToast }) {
             </div>
           );
         })}
+        {!restored && (
+          <div className="term-loading">Connecting to terminal…</div>
+        )}
       </div>
     </>
   );

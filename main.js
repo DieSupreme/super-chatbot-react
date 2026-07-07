@@ -56,7 +56,7 @@ function createWindow() {
   });
 }
 
-app.whenReady().then(() => { loadAllowed(); registerTerminalIpc(app); createWindow(); });
+app.whenReady().then(() => { loadAllowed(); registerTerminalIpc(app, () => win); createWindow(); });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 

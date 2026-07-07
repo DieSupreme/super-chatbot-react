@@ -35,19 +35,11 @@ function resolveApi() {
   return (typeof window !== 'undefined' && window.api) ? window.api : stub;
 }
 
+// Pass through contextBridge values as-is — rebinding/wrapping breaks Electron's
+// read-only non-configurable function properties (e.g. api.term.create).
 const api = new Proxy({}, {
   get(_t, name) {
-    const a = resolveApi();
-    const v = a[name];
-    if (name === 'term' && v && typeof v === 'object') {
-      return new Proxy(v, {
-        get(t, n) {
-          const fn = t[n];
-          return typeof fn === 'function' ? fn.bind(t) : fn;
-        }
-      });
-    }
-    return typeof v === 'function' ? v.bind(a) : v;
+    return resolveApi()[name];
   }
 });
 export default api;

@@ -55,9 +55,22 @@ function createDaemonClient(cfg) {
     throw new Error('terminal daemon did not start');
   }
 
+  function readLockfile() {
+    try { return JSON.parse(fs.readFileSync(lockfilePath(userDataDir), 'utf8')); }
+    catch (_) { return null; }
+  }
+
   function readToken() {
-    try { return JSON.parse(fs.readFileSync(lockfilePath(userDataDir), 'utf8')).token; }
-    catch (_) { return ''; }
+    const lock = readLockfile();
+    return lock && lock.token ? lock.token : '';
+  }
+
+  function killStaleDaemon() {
+    const lock = readLockfile();
+    if (lock && lock.pid) {
+      try { process.kill(lock.pid); } catch (_) {}
+    }
+    try { fs.unlinkSync(lockfilePath(userDataDir)); } catch (_) {}
   }
 
   function hello() {
@@ -89,22 +102,38 @@ function createDaemonClient(cfg) {
       s.on('data', onData);
       s.once('close', onClose);
       s.write(encodeMessage({ t: 'hello', token: readToken() }));
-      const timer = setTimeout(() => finishErr(new Error('daemon hello timeout')), 1000);
+      const timer = setTimeout(() => finishErr(new Error('daemon hello timeout')), 5000);
     });
+  }
+
+  function resetConnection() {
+    ready = null;
+    try { if (sock) sock.destroy(); } catch (_) {}
+    sock = null;
+    for (const p of pending.values()) p.reject(new Error('daemon disconnected'));
+    pending.clear();
   }
 
   function ensure() {
     if (ready) return ready;
     ready = (async () => {
-      try {
-        const s = await connectOrSpawn();
-        attach(s);
-        await hello();
-      } catch (err) {
-        ready = null;
-        try { if (sock) sock.destroy(); } catch (_) {}
-        sock = null;
-        throw err;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const s = await connectOrSpawn();
+          attach(s);
+          await hello();
+          return;
+        } catch (err) {
+          resetConnection();
+          if (attempt === 0) {
+            if (/daemon disconnected during hello/.test(err.message)) {
+              killStaleDaemon();
+              await wait(200);
+            }
+            continue;
+          }
+          throw err;
+        }
       }
     })();
     return ready;

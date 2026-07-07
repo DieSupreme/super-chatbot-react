@@ -9,7 +9,6 @@ import React, { useEffect, useRef, useCallback } from 'react';
 import api from '../api.js';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
-import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 
 // Dark palette tuned to the app theme (see styles.css :root vars).
@@ -71,15 +70,16 @@ export default function TerminalPanel({ active, initialCommand, initialCwd, onRe
     fitRef.current = fit;
 
     term.open(hostRef.current);
-    // WebGL renderer for smooth scroll; fall back to the default DOM renderer if
-    // the GL context can't be created (or is lost later).
-    try {
-      const webgl = new WebglAddon();
-      webgl.onContextLoss(() => { try { webgl.dispose(); } catch (_) {} });
-      term.loadAddon(webgl);
-    } catch (_) { /* DOM renderer is fine */ }
 
-    fit.fit();
+    const waitForLayout = () => new Promise((resolve) => {
+      const tick = () => {
+        if (disposed) { resolve(); return; }
+        const el = hostRef.current;
+        if (el && el.clientWidth > 8 && el.clientHeight > 8) { resolve(); return; }
+        requestAnimationFrame(tick);
+      };
+      tick();
+    });
 
     // Read the native clipboard and feed it to the pty. term.paste() is
     // bracketed-paste aware, so multi-line pastes are delivered as one chunk.
@@ -137,6 +137,8 @@ export default function TerminalPanel({ active, initialCommand, initialCwd, onRe
 
     // Bind this panel to a daemon session: reattach when restoring a live session,
     // otherwise create fresh. Dead/stale session ids fall back to create.
+    // Wire onData/onExit BEFORE reattach — reattach subscribes to live output and
+    // the first banner/prompt bytes must not be missed.
     const bind = async () => {
       let id = sessionId;
       let resolvedCwd = initialCwd || '';
@@ -144,12 +146,36 @@ export default function TerminalPanel({ active, initialCommand, initialCwd, onRe
       let ring = '';
       let freshCreate = false;
 
+      const wireSession = (sid) => {
+        offData = api.term.onData(sid, (data) => term.write(data));
+        offExit = api.term.onExit(sid, ({ exitCode }) => {
+          sessionRef.current = null;
+          term.writeln(`\r\n\x1b[90m[process exited${typeof exitCode === 'number' ? ' with code ' + exitCode : ''}]\x1b[0m`);
+        });
+      };
+
+      const unwireSession = () => {
+        if (offData) offData();
+        if (offExit) offExit();
+        offData = null;
+        offExit = null;
+      };
+
       if (id != null) {
-        const re = await api.term.reattach(id);
-        if (disposed) { api.term.detach(id); return; }
+        wireSession(id);
+        let re = await api.term.reattach(id);
+        if (disposed) { api.term.detach(id); unwireSession(); return; }
         if (re?.ok && re.alive !== false) {
           ring = re.ring || '';
+          if (!ring) {
+            await new Promise(r => setTimeout(r, 100));
+            if (disposed) return;
+            re = await api.term.reattach(id);
+            if (re?.ok && re.ring) ring = re.ring;
+          }
         } else {
+          unwireSession();
+          if (id != null) api.term.detach(id);
           id = null;
         }
       }
@@ -162,19 +188,22 @@ export default function TerminalPanel({ active, initialCommand, initialCwd, onRe
         id = r.id;
         resolvedCwd = r.cwd;
         fallback = !!r.cwdFallback;
-        if (onSession) onSession(id);
-        const re = await api.term.reattach(id);
-        if (disposed) { api.term.detach(id); return; }
+        if (!disposed && onSession) onSession(id);
+        wireSession(id);
+        let re = await api.term.reattach(id);
+        if (disposed) { api.term.detach(id); unwireSession(); return; }
         if (re?.ok && re.ring) ring = re.ring;
+        // Shell banner often lands in the ring buffer after create returns — retry once.
+        if (!ring) {
+          await new Promise(r => setTimeout(r, 150));
+          if (disposed) return;
+          re = await api.term.reattach(id);
+          if (re?.ok && re.ring) ring = re.ring;
+        }
       }
 
-      offData = api.term.onData(id, (data) => term.write(data));
-      offExit = api.term.onExit(id, ({ exitCode }) => {
-        sessionRef.current = null;
-        term.writeln(`\r\n\x1b[90m[process exited${typeof exitCode === 'number' ? ' with code ' + exitCode : ''}]\x1b[0m`);
-      });
-
       if (ring) term.write(ring);
+      else api.term.write(id, '\r');
 
       for (const d of inputBuf) api.term.write(id, d);
       inputBuf = [];
@@ -182,11 +211,22 @@ export default function TerminalPanel({ active, initialCommand, initialCwd, onRe
 
       if (freshCreate && initialCommand) api.term.write(id, initialCommand + '\r');
 
-      if (onResolvedCwd) onResolvedCwd({ cwd: resolvedCwd, fallback });
+      if (onResolvedCwd && !disposed) onResolvedCwd({ cwd: resolvedCwd, fallback });
       try { refit(); } catch (_) {}
-      term.focus();
+      try { term.refresh(0, term.rows - 1); } catch (_) {}
+      if (activeRef.current) term.focus();
     };
-    bind();
+
+    (async () => {
+      try {
+        await waitForLayout();
+        if (disposed) return;
+        try { fit.fit(); } catch (_) {}
+        await bind();
+      } catch (err) {
+        if (!disposed) term.writeln('\r\n\x1b[31mTerminal error: ' + (err && err.message || err) + '\x1b[0m');
+      }
+    })();
 
     // Keep the pty's cols/rows matched to the widget (panel + window resize).
     const applyFit = () => { if (activeRef.current) refit(); };   // can't measure a hidden panel
@@ -215,7 +255,12 @@ export default function TerminalPanel({ active, initialCommand, initialCwd, onRe
   // display:none). A rAF lets layout settle before fit measures.
   useEffect(() => {
     if (!active) return;
-    const raf = requestAnimationFrame(() => { refit(); if (termRef.current) termRef.current.focus(); });
+    const raf = requestAnimationFrame(() => {
+      refit();
+      const el = document.activeElement;
+      if (el?.closest?.('.term-cwd-input')) return;
+      if (termRef.current) termRef.current.focus();
+    });
     return () => cancelAnimationFrame(raf);
   }, [active, refit]);
 

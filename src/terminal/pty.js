@@ -27,9 +27,14 @@ function getClient() {
   return client;
 }
 
-function registerTerminalIpc(app) {
+function registerTerminalIpc(app, getParentWindow) {
   ipcMain.handle('term:create', async (_e, opts) => {
-    try { const c = getClient(); await c.ensure(); return { ok: true, ...(await c.create(opts || {})) }; }
+    try {
+      const c = getClient();
+      await c.ensure();
+      const created = await c.create(opts || {});
+      return { ok: true, ...created };
+    }
     catch (err) { return { ok: false, error: err.message }; }
   });
   ipcMain.handle('term:reattach', async (_e, id) => {
@@ -40,23 +45,56 @@ function registerTerminalIpc(app) {
     }
     catch (err) { return { ok: false, error: err.message }; }
   });
-  ipcMain.on('term:write', (_e, { id, data }) => { if (client) client.write(id, data); });
-  ipcMain.on('term:resize', (_e, { id, cols, rows }) => { if (client) client.resize(id, cols, rows); });
-  ipcMain.on('term:detach', (_e, id) => { if (client) client.detach(id); });
+  ipcMain.on('term:write', async (_e, { id, data }) => {
+    try {
+      const c = getClient();
+      await c.ensure();
+      c.write(id, data);
+    } catch (_) {}
+  });
+  ipcMain.on('term:resize', async (_e, { id, cols, rows }) => {
+    try {
+      const c = getClient();
+      await c.ensure();
+      c.resize(id, cols, rows);
+    } catch (_) {}
+  });
+  ipcMain.on('term:detach', (_e, id) => {
+    try {
+      const c = getClient();
+      c.detach(id);
+    } catch (_) {}
+  });
   ipcMain.handle('term:kill', async (_e, id) => { try { if (client) await client.kill(id); return { ok: true }; } catch (_) { return { ok: true }; } });
   ipcMain.handle('term:list', async () => { try { const c = getClient(); await c.ensure(); return { ok: true, sessions: await c.list() }; } catch (err) { return { ok: false, error: err.message, sessions: [] }; } });
   ipcMain.handle('term:setPinned', async (_e, { id, pinned }) => { try { if (client) await client.setPinned(id, pinned); return { ok: true }; } catch (err) { return { ok: false, error: err.message }; } });
   ipcMain.handle('term:quitAll', async () => { try { if (client) await client.quitAll(); return { ok: true }; } catch (_) { return { ok: true }; } });
 
-  // Folder chooser for the per-instance working-directory bar (unchanged behavior).
-  ipcMain.handle('term:pickFolder', async (e) => {
-    const win = BrowserWindow.fromWebContents(e.sender);
-    const res = await dialog.showOpenDialog(win, { title: 'Choose a folder for this terminal', properties: ['openDirectory'] });
-    if (res.canceled || !res.filePaths.length) return { ok: false, canceled: true };
-    return { ok: true, path: res.filePaths[0] };
+  // Folder chooser for the per-instance working-directory bar.
+  ipcMain.handle('term:pickFolder', async () => {
+    try {
+      const parent = (typeof getParentWindow === 'function' && getParentWindow())
+        || BrowserWindow.getFocusedWindow()
+        || BrowserWindow.getAllWindows().find(w => !w.isDestroyed());
+      const res = await dialog.showOpenDialog(parent, {
+        title: 'Choose a folder for this terminal',
+        properties: ['openDirectory']
+      });
+      if (res.canceled || !res.filePaths.length) return { ok: false, canceled: true };
+      return { ok: true, path: res.filePaths[0] };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
   });
   ipcMain.handle('term:pathExists', (_e, p) => {
-    try { return { ok: true, exists: !!p && fs.existsSync(p) && fs.statSync(p).isDirectory() }; }
+    try {
+      const raw = typeof p === 'string' ? p.trim() : '';
+      let path = raw;
+      if ((path.startsWith('"') && path.endsWith('"')) || (path.startsWith("'") && path.endsWith("'"))) {
+        path = path.slice(1, -1).trim();
+      }
+      return { ok: true, exists: !!path && fs.existsSync(path) && fs.statSync(path).isDirectory() };
+    }
     catch (_) { return { ok: true, exists: false }; }
   });
 
