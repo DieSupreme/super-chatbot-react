@@ -60,7 +60,18 @@ src/
     Composer.jsx           attach bar + token budget, autosize textarea, Send/Stop
     SettingsModal.jsx      settings overlay
     Panels.jsx             allow-list panel, sys-prompt bar, toasts, drop zone
-harness.mjs                jsdom smoke test (23 checks) — run with: node harness.mjs
+harness.mjs                DEPRECATED — use `npm run test:renderer` (kept for reference)
+```
+
+## Testing
+
+```
+npm test              # unit + terminal + renderer
+npm run test:unit     # models, persist, sse
+npm run test:term     # terminal daemon (node:test)
+npm run test:renderer # vitest + jsdom
+npm run test:watch    # vitest watch mode
+npm run test:ci       # build + full suite (used in CI)
 ```
 
 ## Small intentional differences

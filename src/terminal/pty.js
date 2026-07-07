@@ -33,11 +33,16 @@ function registerTerminalIpc(app) {
     catch (err) { return { ok: false, error: err.message }; }
   });
   ipcMain.handle('term:reattach', async (_e, id) => {
-    try { const c = getClient(); await c.ensure(); return { ok: true, ...(await c.reattach(id)) }; }
+    try {
+      const c = getClient(); await c.ensure();
+      const r = await c.reattach(id);
+      return { ok: true, ring: r.ring, alive: r.alive };
+    }
     catch (err) { return { ok: false, error: err.message }; }
   });
   ipcMain.on('term:write', (_e, { id, data }) => { if (client) client.write(id, data); });
   ipcMain.on('term:resize', (_e, { id, cols, rows }) => { if (client) client.resize(id, cols, rows); });
+  ipcMain.on('term:detach', (_e, id) => { if (client) client.detach(id); });
   ipcMain.handle('term:kill', async (_e, id) => { try { if (client) await client.kill(id); return { ok: true }; } catch (_) { return { ok: true }; } });
   ipcMain.handle('term:list', async () => { try { const c = getClient(); await c.ensure(); return { ok: true, sessions: await c.list() }; } catch (err) { return { ok: false, error: err.message, sessions: [] }; } });
   ipcMain.handle('term:setPinned', async (_e, { id, pinned }) => { try { if (client) await client.setPinned(id, pinned); return { ok: true }; } catch (err) { return { ok: false, error: err.message }; } });

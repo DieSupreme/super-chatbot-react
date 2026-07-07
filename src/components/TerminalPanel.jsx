@@ -135,54 +135,54 @@ export default function TerminalPanel({ active, initialCommand, initialCwd, onRe
       else inputBuf.push(data);
     });
 
-    // Bind this panel to a daemon session: either reattach to an existing one
-    // (restored pinned tab) or create a fresh one. Both then replay the ring so
-    // the banner / prior scrollback shows, wire live output, flush buffered keys,
-    // and nudge a resize so full-screen TUIs (claude, vim) repaint.
+    // Bind this panel to a daemon session: reattach when restoring a live session,
+    // otherwise create fresh. Dead/stale session ids fall back to create.
     const bind = async () => {
       let id = sessionId;
       let resolvedCwd = initialCwd || '';
       let fallback = false;
-      const reattaching = id != null;
+      let ring = '';
+      let freshCreate = false;
 
-      if (!reattaching) {
+      if (id != null) {
+        const re = await api.term.reattach(id);
+        if (disposed) { api.term.detach(id); return; }
+        if (re?.ok && re.alive !== false) {
+          ring = re.ring || '';
+        } else {
+          id = null;
+        }
+      }
+
+      if (id == null) {
+        freshCreate = true;
         const r = await api.term.create({ cols: term.cols, rows: term.rows, cwd: initialCwd || undefined, command: initialCommand || '' });
         if (disposed) { if (r && r.ok) api.term.kill(r.id); return; }
         if (!r || !r.ok) { term.writeln('\r\n\x1b[31mFailed to start terminal: ' + (r && r.error || 'unknown') + '\x1b[0m'); return; }
-        id = r.id; resolvedCwd = r.cwd; fallback = !!r.cwdFallback;
+        id = r.id;
+        resolvedCwd = r.cwd;
+        fallback = !!r.cwdFallback;
+        if (onSession) onSession(id);
+        const re = await api.term.reattach(id);
+        if (disposed) { api.term.detach(id); return; }
+        if (re?.ok && re.ring) ring = re.ring;
       }
 
-      // Report the id back to the caller only for freshly created sessions — on
-      // reattach the caller already knows the id (it's how we got here).
-      if (!reattaching && onSession) onSession(id);
-
-      // Wire output/exit BEFORE telling main to stream, so the buffered banner /
-      // first prompt (held in main until now) is not missed.
       offData = api.term.onData(id, (data) => term.write(data));
       offExit = api.term.onExit(id, ({ exitCode }) => {
         sessionRef.current = null;
         term.writeln(`\r\n\x1b[90m[process exited${typeof exitCode === 'number' ? ' with code ' + exitCode : ''}]\x1b[0m`);
       });
 
-      // Replay recent output for this session (banner or prior scrollback).
-      const re = await api.term.reattach(id);
-      if (disposed) return;
-      if (re && re.ok && re.ring) term.write(re.ring);
+      if (ring) term.write(ring);
 
-      // Flush keys typed while binding, THEN switch term.onData to live routing —
-      // sessionRef.current is set only after the drain, with no await in between,
-      // so a keystroke typed during the reattach round-trip can never jump ahead
-      // of the earlier buffered ones (term.onData buffers while it's still null).
       for (const d of inputBuf) api.term.write(id, d);
       inputBuf = [];
       sessionRef.current = id;
 
-      // Fresh sessions run their launch command once; reattached ones must not.
-      if (!reattaching && initialCommand) api.term.write(id, initialCommand + '\r');
+      if (freshCreate && initialCommand) api.term.write(id, initialCommand + '\r');
 
-      // report where the pty actually started (may differ from what was requested)
       if (onResolvedCwd) onResolvedCwd({ cwd: resolvedCwd, fallback });
-      // Nudge a repaint for TUIs by resizing to current fit.
       try { refit(); } catch (_) {}
       term.focus();
     };
@@ -203,8 +203,8 @@ export default function TerminalPanel({ active, initialCommand, initialCwd, onRe
       if (resizeObserver) resizeObserver.disconnect();
       if (offData) offData();
       if (offExit) offExit();
-      // Do NOT kill the session on unmount — persistence and tab-close (✕) own the
-      // session lifecycle now. Just detach this panel's listeners.
+      const sid = sessionRef.current;
+      if (sid != null && api.term.detach) api.term.detach(sid);
       sessionRef.current = null;
       try { term.dispose(); } catch (_) {}
       termRef.current = null;

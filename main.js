@@ -3,6 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const zlib = require('zlib');
 const { registerTerminalIpc } = require('./src/terminal/pty.js');
+const { createSseState, drainSseBuffer } = require('./src/main/sse.js');
 
 const KEY_FILE = path.join(app.getPath('userData'), 'or-key.bin');
 const ALLOW_FILE = path.join(app.getPath('userData'), 'allowed-files.json');
@@ -365,8 +366,14 @@ ipcMain.handle('settings:get', () => {
   catch (_) { return { ok: true, settings: {} }; }
 });
 ipcMain.handle('settings:save', (_e, s) => {
-  try { fs.writeFileSync(SETTINGS_FILE, JSON.stringify(s)); return { ok: true }; }
-  catch (err) { return { ok: false, error: err.message }; }
+  try {
+    let existing = {};
+    if (fs.existsSync(SETTINGS_FILE)) {
+      try { existing = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')); } catch (_) {}
+    }
+    fs.writeFileSync(SETTINGS_FILE, JSON.stringify({ ...existing, ...s }));
+    return { ok: true };
+  } catch (err) { return { ok: false, error: err.message }; }
 });
 
 // ---------- Image generation ----------
@@ -453,37 +460,32 @@ ipcMain.handle('chat:send', async (_e, { key, model, messages, requestId, web, t
     }
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
-    let buffer = '', full = '', usage = null, citations = [];
+    const sse = createSseState();
+    const processLine = (line) => {
+      sse.processLine(line);
+      const t = line.trim();
+      if (!t.startsWith('data:')) return;
+      const data = t.slice(5).trim();
+      if (data === '[DONE]') return;
+      try {
+        const json = JSON.parse(data);
+        const d = json.choices?.[0]?.delta || {};
+        if (d.reasoning) { win.webContents.send('chat:chunk', { requestId, reasoning: d.reasoning }); }
+        if (d.content) { win.webContents.send('chat:chunk', { requestId, delta: d.content }); }
+      } catch (_) {}
+    };
+    let buffer = '';
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop();
-      for (const line of lines) {
-        const t = line.trim();
-        if (!t.startsWith('data:')) continue;
-        const data = t.slice(5).trim();
-        if (data === '[DONE]') continue;
-        try {
-          const json = JSON.parse(data);
-          const d = json.choices?.[0]?.delta || {};
-          if (d.reasoning) { win.webContents.send('chat:chunk', { requestId, reasoning: d.reasoning }); }
-          if (d.content) { full += d.content; win.webContents.send('chat:chunk', { requestId, delta: d.content }); }
-          // web search citations arrive as annotations on the delta or message
-          const anns = d.annotations || json.choices?.[0]?.message?.annotations;
-          if (Array.isArray(anns)) {
-            for (const a of anns) {
-              if (a.type === 'url_citation' && a.url_citation) {
-                const u = a.url_citation.url;
-                if (u && !citations.find(c => c.url === u)) citations.push({ url: u, title: a.url_citation.title || u });
-              }
-            }
-          }
-          if (json.usage) usage = json.usage;
-        } catch (_) {}
-      }
+      buffer = drainSseBuffer(buffer, false, processLine);
     }
+    buffer += decoder.decode();
+    drainSseBuffer(buffer, true, processLine);
+    const full = sse.full;
+    const usage = sse.usage;
+    const citations = sse.citations;
     // OpenRouter returns actual cost in usage.cost (USD) when usage.include is set
     const cost = usage && typeof usage.cost === 'number' ? usage.cost : 0;
     const tokens = usage ? { prompt: usage.prompt_tokens || 0, completion: usage.completion_tokens || 0, total: usage.total_tokens || 0 } : null;

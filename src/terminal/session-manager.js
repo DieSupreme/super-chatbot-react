@@ -65,6 +65,7 @@ function createSessionManager(deps = {}) {
     try { s.proc.resize(c, r); } catch (_) {}
   }
   function replay(id) { const s = sessions.get(id); return s ? s.ring : ''; }
+  function exists(id) { return sessions.has(id); }
   function setPinned(id, pinned) { const s = sessions.get(id); if (s) s.pinned = !!pinned; }
   function list() {
     return [...sessions.values()].map(s => ({ id: s.id, label: s.label, command: s.command, cwd: s.cwd, pinned: s.pinned }));
@@ -81,7 +82,7 @@ function createSessionManager(deps = {}) {
   function size() { return sessions.size; }
   function on(type, cb) { listeners[type].add(cb); return () => listeners[type].delete(cb); }
 
-  return { create, write, resize, replay, setPinned, list, kill, killUnpinned, killAll, size, on };
+  return { create, write, resize, replay, exists, setPinned, list, kill, killUnpinned, killAll, size, on };
 }
 
 module.exports = { createSessionManager, resolveShell };

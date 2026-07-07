@@ -36,13 +36,6 @@ function createDaemonClient(cfg) {
     s.on('error', () => {});
   }
 
-  // pipePath() derives the pipe name from process.env.TERM_PIPE_NAME by default.
-  // Tests pass a unique tag via cfg.spawnEnv so a spawned daemon listens on an
-  // isolated pipe — but that env only reaches the spawned child, not this
-  // process. Passing the same tag as an explicit override lets the client
-  // compute the identical path without ever touching process.env. In
-  // production spawnEnv.TERM_PIPE_NAME is undefined, so pipePath() falls back
-  // to the same per-user default the daemon computes from its own env.
   const clientPipe = () => pipePath(spawnEnv.TERM_PIPE_NAME);
 
   function tryConnect() {
@@ -56,7 +49,7 @@ function createDaemonClient(cfg) {
   async function connectOrSpawn() {
     try { return await tryConnect(); } catch (_) { /* fall through to spawn */ }
     spawn(execPath, [daemonPath, userDataDir], { detached: true, stdio: 'ignore', env: spawnEnv }).unref();
-    for (let i = 0; i < 50; i++) {         // poll up to ~5s for the pipe
+    for (let i = 0; i < 50; i++) {
       try { return await tryConnect(); } catch (_) { await wait(100); }
     }
     throw new Error('terminal daemon did not start');
@@ -68,45 +61,62 @@ function createDaemonClient(cfg) {
   }
 
   function hello() {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const s = sock;
+      if (!s) { reject(new Error('daemon not connected')); return; }
       let done = false;
-      const finish = () => {
-        if (done) return;
-        done = true;
+      const cleanup = () => {
         clearTimeout(timer);
         if (s) s.removeListener('data', onData);
+        if (s) s.removeListener('close', onClose);
+      };
+      const finishOk = () => {
+        if (done) return;
+        done = true;
+        cleanup();
         resolve();
       };
+      const finishErr = (err) => {
+        if (done) return;
+        done = true;
+        cleanup();
+        reject(err);
+      };
+      const onClose = () => finishErr(new Error('daemon disconnected during hello'));
       const sd = new StringDecoder('utf8');
-      const feed = createDecoder((m) => { if (m.t === 'hello-ok') finish(); });
+      const feed = createDecoder((m) => { if (m.t === 'hello-ok') finishOk(); });
       const onData = (buf) => feed(sd.write(buf));
       s.on('data', onData);
+      s.once('close', onClose);
       s.write(encodeMessage({ t: 'hello', token: readToken() }));
-      // hello-ok also flows to attach()'s persistent decoder; this listener is
-      // just a fast-path so ensure() resolves promptly, with a safety timeout
-      // in case hello-ok is somehow missed. Must clear the timer on early
-      // resolution — otherwise it fires later against a socket that may
-      // already be closed (e.g. after quitAll()).
-      const timer = setTimeout(finish, 1000);
+      const timer = setTimeout(() => finishErr(new Error('daemon hello timeout')), 1000);
     });
   }
 
   function ensure() {
     if (ready) return ready;
     ready = (async () => {
-      const s = await connectOrSpawn();
-      attach(s);
-      await hello();
+      try {
+        const s = await connectOrSpawn();
+        attach(s);
+        await hello();
+      } catch (err) {
+        ready = null;
+        try { if (sock) sock.destroy(); } catch (_) {}
+        sock = null;
+        throw err;
+      }
     })();
     return ready;
   }
 
   function call(msg) {
     return ensure().then(() => new Promise((resolve, reject) => {
+      if (!sock) { reject(new Error('daemon disconnected')); return; }
       const id = ++reqId;
       pending.set(id, { resolve, reject });
-      sock.write(encodeMessage({ ...msg, reqId: id }));
+      try { sock.write(encodeMessage({ ...msg, reqId: id })); }
+      catch (err) { pending.delete(id); reject(err); }
     }));
   }
   function fire(msg) { if (sock) sock.write(encodeMessage(msg)); }
@@ -114,7 +124,11 @@ function createDaemonClient(cfg) {
   return {
     ensure,
     create: (opts) => call({ t: 'create', opts: opts || {} }),
-    reattach: (id) => call({ t: 'reattach', id }).then(r => ({ ring: Buffer.from(r.ring, 'base64').toString('utf8') })),
+    reattach: (id) => call({ t: 'reattach', id }).then(r => ({
+      ring: Buffer.from(r.ring || '', 'base64').toString('utf8'),
+      alive: r.alive !== false
+    })),
+    detach: (id) => fire({ t: 'detach', id }),
     write: (id, data) => fire({ t: 'write', id, data: Buffer.from(String(data), 'utf8').toString('base64') }),
     resize: (id, cols, rows) => fire({ t: 'resize', id, cols, rows }),
     kill: (id) => call({ t: 'kill', id }),

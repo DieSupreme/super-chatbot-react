@@ -52,10 +52,27 @@ test('daemon: create, reattach replay, data delivery, kill', async () => {
     const created = await c.req({ t: 'create', opts: { label: 'A' } });
     assert.strictEqual(typeof created.id, 'number');
     const re = await c.req({ t: 'reattach', id: created.id });
+    assert.strictEqual(re.alive, true);
     assert.ok(Buffer.from(re.ring, 'base64').toString('utf8').includes('BANNER'));
     c.send({ t: 'write', id: created.id, data: Buffer.from('hi', 'utf8').toString('base64') });
     await wait(150);
     assert.ok(c.data.some(d => d.id === created.id && Buffer.from(d.data, 'base64').toString('utf8').includes('ECHO:hi')));
+    sock.end();
+  } finally { child.kill(); }
+});
+
+test('daemon: reattach to a dead session reports alive=false', async () => {
+  const { child, pipe, udir } = bootDaemon();
+  try {
+    const sock = await connect(pipe);
+    const lock = JSON.parse(fs.readFileSync(path.join(udir, 'terminal-daemon.json'), 'utf8'));
+    const c = client(sock);
+    c.hello(lock.token);
+    const created = await c.req({ t: 'create', opts: {} });
+    await c.req({ t: 'kill', id: created.id });
+    const re = await c.req({ t: 'reattach', id: created.id });
+    assert.strictEqual(re.alive, false);
+    assert.strictEqual(Buffer.from(re.ring, 'base64').toString('utf8'), '');
     sock.end();
   } finally { child.kill(); }
 });

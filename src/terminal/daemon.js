@@ -57,10 +57,15 @@ const server = net.createServer((sock) => {
     switch (m.t) {
       case 'create': reply(m.reqId, sm.create(m.opts || {})); break;
       case 'reattach': {
-        c.subs.add(m.id);
-        reply(m.reqId, { ring: Buffer.from(sm.replay(m.id), 'utf8').toString('base64') });
+        const alive = sm.exists(m.id);
+        if (alive) c.subs.add(m.id);
+        reply(m.reqId, {
+          alive,
+          ring: alive ? Buffer.from(sm.replay(m.id), 'utf8').toString('base64') : ''
+        });
         break;
       }
+      case 'detach': c.subs.delete(m.id); break;
       case 'write': sm.write(m.id, Buffer.from(m.data || '', 'base64').toString('utf8')); break;
       case 'resize': sm.resize(m.id, m.cols, m.rows); break;
       case 'kill': sm.kill(m.id); reply(m.reqId, { ok: true }); maybeSelfExit(); break;

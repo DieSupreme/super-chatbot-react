@@ -298,3 +298,18 @@ header button.ghost.active { color:var(--text); border-color:var(--accent); }
 .term-tab .pin.on { opacity: 1; }
 .term-tab .pin:hover { opacity: 0.8; }
 .term-quit-all { margin-left: auto; }
+
+/* launcher spawn buttons (+ per tool) */
+.term-launchers { display:inline-flex; align-items:center; gap:4px; margin-left:6px; padding-left:8px; border-left:1px solid var(--edge); flex-shrink:0; }
+.term-launcher { display:inline-flex; align-items:stretch; border:1px solid var(--edge); border-radius:6px; overflow:hidden; background:var(--panel-2); }
+.term-launcher-btn { border:none; background:transparent; color:var(--muted); font-size:11px; padding:4px 8px; cursor:pointer; white-space:nowrap; }
+.term-launcher-btn:hover { color:var(--text); background:var(--edge); }
+.term-launcher-add { border:none; border-left:1px solid var(--edge); background:transparent; color:var(--accent-2); font-size:13px; font-weight:600; padding:4px 8px; cursor:pointer; line-height:1; min-width:26px; }
+.term-launcher-add:hover { color:var(--text); background:var(--edge); }
+
+/* file-drop overlay inside the terminal stack */
+.term-drop { position:absolute; inset:0; z-index:10; display:flex; align-items:center; justify-content:center;
+  background:rgba(0,0,0,.72); border:2px dashed var(--accent); border-radius:8px; margin:6px; pointer-events:none; }
+.term-drop .inner { text-align:center; color:var(--text); }
+.term-drop .inner .big { font-size:36px; margin-bottom:8px; }
+.term-drop .inner .lbl { font-size:14px; color:var(--accent-2); }

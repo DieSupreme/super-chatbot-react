@@ -4,10 +4,16 @@ const { contextBridge, ipcRenderer, webUtils, clipboard } = require('electron');
 // listener each (instead of one ipcRenderer listener per terminal panel), keyed
 // by session id. O(1) dispatch, and only two listeners total regardless of how
 // many terminals are open.
-const termDataCbs = new Map();
+const termDataCbs = new Map();   // id -> Set<callback>
 const termExitCbs = new Map();
-ipcRenderer.on('term:data', (_e, { id, data }) => { const cb = termDataCbs.get(id); if (cb) cb(data); });
-ipcRenderer.on('term:exit', (_e, payload) => { const cb = termExitCbs.get(payload.id); if (cb) cb(payload); });
+ipcRenderer.on('term:data', (_e, { id, data }) => {
+  const cbs = termDataCbs.get(id);
+  if (cbs) for (const cb of cbs) cb(data);
+});
+ipcRenderer.on('term:exit', (_e, payload) => {
+  const cbs = termExitCbs.get(payload.id);
+  if (cbs) for (const cb of cbs) cb(payload);
+});
 
 contextBridge.exposeInMainWorld('api', {
   // key
@@ -17,7 +23,11 @@ contextBridge.exposeInMainWorld('api', {
   // chat
   sendChat: (payload) => ipcRenderer.invoke('chat:send', payload),
   stopChat: (requestId) => ipcRenderer.invoke('chat:stop', requestId),
-  onChunk: (cb) => ipcRenderer.on('chat:chunk', (_e, data) => cb(data)),
+  onChunk: (cb) => {
+    const handler = (_e, data) => cb(data);
+    ipcRenderer.on('chat:chunk', handler);
+    return () => ipcRenderer.removeListener('chat:chunk', handler);
+  },
   // uploads
   pickFiles: () => ipcRenderer.invoke('files:pick'),
   readFiles: (paths) => ipcRenderer.invoke('files:read', paths),
@@ -54,13 +64,22 @@ contextBridge.exposeInMainWorld('api', {
     write: (id, data) => ipcRenderer.send('term:write', { id, data }),
     resize: (id, cols, rows) => ipcRenderer.send('term:resize', { id, cols, rows }),
     kill: (id) => ipcRenderer.invoke('term:kill', id),
+    detach: (id) => ipcRenderer.send('term:detach', id),
     list: () => ipcRenderer.invoke('term:list'),
     setPinned: (id, pinned) => ipcRenderer.invoke('term:setPinned', { id, pinned }),
     quitAll: () => ipcRenderer.invoke('term:quitAll'),
     pickFolder: () => ipcRenderer.invoke('term:pickFolder'),
     pathExists: (p) => ipcRenderer.invoke('term:pathExists', p),
     // per-session data/exit registration; each returns a disposer.
-    onData: (id, cb) => { termDataCbs.set(id, cb); return () => termDataCbs.delete(id); },
-    onExit: (id, cb) => { termExitCbs.set(id, cb); return () => termExitCbs.delete(id); }
+    onData: (id, cb) => {
+      if (!termDataCbs.has(id)) termDataCbs.set(id, new Set());
+      termDataCbs.get(id).add(cb);
+      return () => { termDataCbs.get(id)?.delete(cb); };
+    },
+    onExit: (id, cb) => {
+      if (!termExitCbs.has(id)) termExitCbs.set(id, new Set());
+      termExitCbs.get(id).add(cb);
+      return () => { termExitCbs.get(id)?.delete(cb); };
+    }
   }
 });

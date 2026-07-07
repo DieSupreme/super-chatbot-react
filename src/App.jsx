@@ -11,6 +11,7 @@ import ChatLog from './components/ChatLog.jsx';
 import Composer from './components/Composer.jsx';
 import { SidePanel, SysPromptBar, Toasts, DropZone } from './components/Panels.jsx';
 import TerminalDock from './components/TerminalDock.jsx';
+import { toPersistedMessage } from './persist.js';
 
 let uidCounter = 0;
 const newUid = () => 'm_' + (++uidCounter) + '_' + Date.now().toString(36);
@@ -95,7 +96,7 @@ export default function App() {
   // refs that mirror values async handlers need to read fresh
   const stateRef = useRef({});
   stateRef.current = { keyVal, model, memory, web, imageMode, settings, sysPrompt,
-    currentId, currentTitle, currentCost, pending };
+    currentId, currentTitle, currentCost, pending, view };
 
   // ================= boot =================
   useEffect(() => {
@@ -123,12 +124,13 @@ export default function App() {
   // Chunks arrive faster than React should re-render, so they're buffered in
   // a ref and flushed once per animation frame.
   useEffect(() => {
-    api.onChunk(({ requestId, delta, reasoning }) => {
+    const off = api.onChunk(({ requestId, delta, reasoning }) => {
       const b = chunkBuf.current[requestId] || (chunkBuf.current[requestId] = { delta: '', reasoning: '' });
       if (delta) b.delta += delta;
       if (reasoning) b.reasoning += reasoning;
       if (!rafId.current) rafId.current = requestAnimationFrame(flushChunks);
     });
+    return () => { if (typeof off === 'function') off(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -177,7 +179,7 @@ export default function App() {
     stateRef.current.currentId = id;
     const persistable = msgs
       .filter(m => !m.error && !m.streaming && !m.imagePending && (m.role === 'user' || (m.content && m.content.length)))
-      .map(m => ({ role: m.role, content: m.content }));
+      .map(toPersistedMessage);
     await api.convoSave({
       id, title: st.currentTitle, model: st.model,
       messages: persistable, cost: st.currentCost, sysPrompt: st.sysPrompt, memory: st.memory
@@ -205,7 +207,11 @@ export default function App() {
     if (c.model) setModel(c.model);
     const who = modelLabel(c.model || stateRef.current.model);
     setMessages((c.messages || []).map(m => attachThinkToggle({
-      uid: newUid(), role: m.role, content: m.content, who
+      uid: newUid(), role: m.role, content: m.content, who,
+      attachNames: m.attachNames,
+      reasoning: m.reasoning,
+      citations: m.citations,
+      thinkOpen: m.reasoning ? false : undefined
     })));
     refreshConvos();
   }
@@ -288,18 +294,24 @@ export default function App() {
     let dragDepth = 0;
     const enter = (e) => {
       e.preventDefault();
+      if (stateRef.current.view === 'terminal') return;
       if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')) {
         dragDepth++; setDropShow(true);
       }
     };
-    const over = (e) => e.preventDefault();
+    const over = (e) => {
+      if (stateRef.current.view === 'terminal') return;
+      e.preventDefault();
+    };
     const leave = (e) => {
       e.preventDefault();
+      if (stateRef.current.view === 'terminal') return;
       dragDepth = Math.max(0, dragDepth - 1);
       if (dragDepth === 0) setDropShow(false);
     };
     const drop = async (e) => {
       e.preventDefault();
+      if (stateRef.current.view === 'terminal') return;
       dragDepth = 0; setDropShow(false);
       const dropped = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
       if (!dropped.length) return;
@@ -478,7 +490,7 @@ export default function App() {
           return { ...m, streaming: false, fresh: false, thinkOpen: false, stopped: true };
         }
         return { ...m, streaming: false, fresh: false, thinkOpen: false,
-          content: r.full, citations: r.citations || [] };
+          content: r.full, citations: r.citations || [], reasoning: m.reasoning };
       }));
 
       if (r.ok && typeof r.cost === 'number') {
@@ -538,17 +550,22 @@ export default function App() {
     let msgs = messagesRef.current;
     if (msgs.length && msgs[msgs.length - 1].role === 'assistant') msgs = msgs.slice(0, -1);
     setMessages(msgs);
+    await persistConvo(msgs);
     await runCompletion(msgs);
   }
 
-  function editLastUserMessage() {
+  async function editLastUserMessage() {
     if (isStreamingRef.current) return;
     const msgs = messagesRef.current;
     let idx = msgs.length - 1;
     while (idx >= 0 && msgs[idx].role !== 'user') idx--;
     if (idx < 0) return;
-    setInput(extractText(msgs[idx].content));
-    setMessages(msgs.slice(0, idx));
+    const msg = msgs[idx];
+    setInput(extractText(msg.content));
+    const trimmed = msgs.slice(0, idx);
+    setMessages(trimmed);
+    await persistConvo(trimmed);
+    if (msg.attachNames?.length) toast('Image attachments were not restored — re-attach files if needed', 'warn');
     inputRef.current && inputRef.current.focus();
   }
 

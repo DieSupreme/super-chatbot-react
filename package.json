@@ -6,7 +6,12 @@
   "scripts": {
     "build": "vite build",
     "watch": "vite build --watch",
+    "test": "npm run test:unit && npm run test:term && npm run test:renderer",
+    "test:unit": "node --test test/unit/*.test.js test/unit/*.test.mjs",
     "test:term": "node --test test/terminal/*.test.js",
+    "test:renderer": "vitest run",
+    "test:watch": "vitest",
+    "test:ci": "npm run build && npm test",
     "start": "electron .",
     "dev": "vite build && electron .",
     "rebuild": "node scripts/rebuild-node-pty.js",
@@ -24,9 +29,13 @@
   },
   "devDependencies": {
     "@electron/rebuild": "^3.6.0",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
     "@vitejs/plugin-react": "^4.7.0",
     "electron": "^33.2.0",
     "jsdom": "^29.1.1",
-    "vite": "^5.4.21"
+    "vite": "^5.4.21",
+    "vitest": "^4.1.10"
   }
 }

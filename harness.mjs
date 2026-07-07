@@ -1,3 +1,5 @@
+// DEPRECATED — use `npm run test:renderer` instead.
+// This file is kept temporarily for reference; it will be removed in a follow-up.
 // jsdom smoke test for the built React renderer.
 // Stubs window.api (the Electron preload bridge), mounts the app, then drives:
 // boot → send → streamed reasoning + content chunks → finalize → markdown render.
@@ -46,7 +48,7 @@ window.api = {
   generateImage: async () => ({ ok: true, b64: 'aGk=', mime: 'image/png', cost: 0.01 }),
   saveImage: async () => ({ ok: true }),
   stopChat: async () => ({ ok: true }),
-  onChunk: (cb) => { chunkCb = cb; },
+  onChunk: (cb) => { chunkCb = cb; return () => { if (chunkCb === cb) chunkCb = null; }; },
   sendChat: async ({ messages, requestId }) => {
     calls.push(['sendChat', messages]);
     // stream a little reasoning, then content with markdown + two named code blocks + an edit block
