@@ -7,6 +7,7 @@
 // TERM_FAKE_PTY (test-only module path for a fake node-pty).
 const net = require('net');
 const fs = require('fs');
+const { StringDecoder } = require('string_decoder');
 const { pipePath, lockfilePath, makeToken, encodeMessage, createDecoder } = require('./protocol');
 const { createSessionManager } = require('./session-manager');
 
@@ -25,6 +26,12 @@ sm.on('data', ({ id, data }) => {
 });
 sm.on('exit', ({ id, exitCode }) => {
   for (const c of clients) if (c.subs.has(id)) c.send({ t: 'exit', id, exitCode });
+  // session-manager emits 'exit' BEFORE its internal kill(id) removes the
+  // session from its map, so sm.size() still counts it here. Defer the
+  // self-exit check to a microtask so it runs after that internal kill has
+  // run, otherwise an idle daemon whose last session dies on its own would
+  // never notice it's orphaned.
+  queueMicrotask(maybeSelfExit);
 });
 
 function maybeSelfExit() {
@@ -40,6 +47,7 @@ function shutdown(code) {
 const server = net.createServer((sock) => {
   const c = { sock, subs: new Set(), authed: false, send: (o) => { try { sock.write(encodeMessage(o)); } catch (_) {} } };
   const reply = (reqId, result) => c.send({ t: 'reply', reqId, result });
+  const sd = new StringDecoder('utf8');
   const feed = createDecoder((m) => {
     if (!c.authed) {
       if (m.t === 'hello' && m.token === token) { c.authed = true; clients.add(c); c.send({ t: 'hello-ok' }); }
@@ -63,14 +71,14 @@ const server = net.createServer((sock) => {
       default: break;
     }
   });
-  sock.on('data', (buf) => feed(buf.toString('utf8')));
+  sock.on('data', (buf) => feed(sd.write(buf)));
   sock.on('error', () => {});
   sock.on('close', () => { clients.delete(c); maybeSelfExit(); });
 });
 
 // Write the lockfile BEFORE listening so any client that can connect is
 // guaranteed to find the token. Then serve.
-fs.writeFileSync(lockfilePath(userDataDir), JSON.stringify({ pipe, token, pid: process.pid }));
+fs.writeFileSync(lockfilePath(userDataDir), JSON.stringify({ pipe, token, pid: process.pid }), { mode: 0o600 });
 server.on('error', () => shutdown(1));
 server.listen(pipe);
 

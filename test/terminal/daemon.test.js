@@ -11,10 +11,10 @@ const DAEMON = path.join(__dirname, '..', '..', 'src', 'terminal', 'daemon.js');
 const FAKE = path.join(__dirname, 'fake-pty.js');
 
 // Boot a daemon with a unique pipe + fake PTY; return { child, pipe, udir }.
-function bootDaemon() {
+function bootDaemon(extraEnv) {
   const tag = 'sc-daemon-test-' + process.pid + '-' + (bootDaemon._n = (bootDaemon._n || 0) + 1);
   const udir = fs.mkdtempSync(path.join(os.tmpdir(), 'sc-udir-'));
-  const env = { ...process.env, TERM_PIPE_NAME: tag, TERM_FAKE_PTY: FAKE };
+  const env = { ...process.env, TERM_PIPE_NAME: tag, TERM_FAKE_PTY: FAKE, ...(extraEnv || {}) };
   const child = spawn(process.execPath, [DAEMON, udir], { env, stdio: 'ignore' });
   return { child, tag, udir, pipe: (() => { const old = process.env.TERM_PIPE_NAME; process.env.TERM_PIPE_NAME = tag; const p = pipePath(); process.env.TERM_PIPE_NAME = old; return p; })() };
 }
@@ -89,5 +89,26 @@ test('daemon: self-exits when last session dies and client disconnects', async (
   const s = await c.req({ t: 'create', opts: {} });
   await c.req({ t: 'kill', id: s.id });
   sock.end();
+  assert.strictEqual(await exited, true);
+});
+
+test('daemon: self-exits when the last session dies on its own after the client disconnects', { timeout: 5000 }, async () => {
+  const { child, pipe, udir } = bootDaemon({ TERM_FAKE_AUTOEXIT: '120' });
+  const exited = new Promise(res => child.on('exit', () => res(true)));
+  const sock = await connect(pipe);
+  const lock = JSON.parse(fs.readFileSync(path.join(udir, 'terminal-daemon.json'), 'utf8'));
+  const c = client(sock);
+  c.hello(lock.token);
+  // Unpinned session, still alive when we disconnect: the close-handler's
+  // self-exit check must see sm.size() >= 1 and NOT exit yet.
+  await c.req({ t: 'create', opts: {} });
+  sock.end();
+  // Give the close handler a moment to run (and confirm it did NOT exit while
+  // the session was still alive).
+  await wait(50);
+  assert.strictEqual(child.exitCode, null, 'daemon must not exit while its session is still alive');
+  // The fake PTY autonomously exits ~120ms after spawn, with zero clients
+  // connected. The daemon must notice via the deferred maybeSelfExit() in the
+  // sm.on('exit', ...) handler and shut itself down.
   assert.strictEqual(await exited, true);
 });
