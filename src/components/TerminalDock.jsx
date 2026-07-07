@@ -31,6 +31,7 @@ const makeShell = () => ({ key: 'shell', label: 'Shell', command: null, cwd: '',
 export default function TerminalDock({ active, onToast }) {
   const [instances, setInstances] = useState([makeShell()]);
   const [activeKey, setActiveKey] = useState('shell');
+  const [restored, setRestored] = useState(false);
 
   const activeInst = instances.find(i => i.key === activeKey) || instances[0];
   const isOpen = useCallback((key) => instances.some(i => i.key === key), [instances]);
@@ -48,28 +49,49 @@ export default function TerminalDock({ active, onToast }) {
   }, []);
 
   // On mount, reconcile saved pinned tabs against sessions still alive in the daemon.
+  // Build the ENTIRE initial instance list (including the shell) before setting
+  // state once — never let a fresh shell mount (and spawn a session) before we
+  // know whether a pinned shell session should be reattached instead.
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const [listRes, setRes] = await Promise.all([api.term.list(), api.getSettings()]);
-      if (cancelled) return;
-      const live = (listRes && listRes.sessions) || [];
-      const saved = ((setRes && setRes.settings && setRes.settings.pinnedTerminals) || []);
-      const restored = [];
-      for (const meta of saved) {
-        const liveMatch = live.find(s => s.id === meta.sessionId);
-        if (liveMatch) {
-          restored.push({ key: meta.key, label: meta.label, command: meta.command, cwd: liveMatch.cwd, cwdDraft: liveMatch.cwd, gen: 0, sessionId: liveMatch.id, pinned: true });
-        } else {
-          // Process gone — respawn fresh (create path) and tell the user.
-          restored.push({ key: meta.key, label: meta.label, command: meta.command, cwd: meta.cwd || '', cwdDraft: meta.cwd || '', gen: 0, sessionId: null, pinned: true });
-          if (onToast) onToast(`${meta.label}: reconnected as a fresh session`, 'warn');
+      try {
+        const [listRes, setRes] = await Promise.all([api.term.list(), api.getSettings()]);
+        if (cancelled) return;
+        const live = (listRes && listRes.sessions) || [];
+        const saved = ((setRes && setRes.settings && setRes.settings.pinnedTerminals) || []);
+        const built = [makeShell()];
+        for (const meta of saved) {
+          const liveMatch = live.find(s => s.id === meta.sessionId);
+          if (meta.key === 'shell') {
+            // Reconcile into the always-present shell instance instead of pushing
+            // a second one — a saved pinned shell and the default shell share key
+            // 'shell', so this is a merge, not an append.
+            const idx = built.findIndex(i => i.key === 'shell');
+            if (idx !== -1) {
+              const base = built[idx];
+              if (liveMatch) {
+                built[idx] = { ...base, pinned: true, command: meta.command, sessionId: liveMatch.id, cwd: liveMatch.cwd, cwdDraft: liveMatch.cwd };
+              } else {
+                built[idx] = { ...base, pinned: true, command: meta.command };
+                if (onToast) onToast('Shell: reconnected as a fresh session', 'warn');
+              }
+            }
+            continue;
+          }
+          if (built.some(i => i.key === meta.key)) continue; // dedupe
+          if (liveMatch) {
+            built.push({ key: meta.key, label: meta.label, command: meta.command, cwd: liveMatch.cwd, cwdDraft: liveMatch.cwd, gen: 0, sessionId: liveMatch.id, pinned: true });
+          } else {
+            // Process gone — respawn fresh (create path) and tell the user.
+            built.push({ key: meta.key, label: meta.label, command: meta.command, cwd: meta.cwd || '', cwdDraft: meta.cwd || '', gen: 0, sessionId: null, pinned: true });
+            if (onToast) onToast(`${meta.label}: reconnected as a fresh session`, 'warn');
+          }
         }
+        if (!cancelled) setInstances(built);
+      } finally {
+        if (!cancelled) setRestored(true);
       }
-      if (restored.length) setInstances(prev => {
-        const have = new Set(prev.map(i => i.key));
-        return [...prev, ...restored.filter(r => !have.has(r.key))];
-      });
     })();
     return () => { cancelled = true; };
   }, [onToast]);
@@ -136,9 +158,14 @@ export default function TerminalDock({ active, onToast }) {
       // if validation itself failed (e.g. no Electron), let main be the authority.
       if (r && r.ok && !r.exists) { onToast && onToast('Folder not found: ' + p, 'warn'); return; }
     }
-    // Changing the folder respawns: forget the old session id so the panel creates
-    // a new one, and bump gen to remount.
-    setInstances(prev => prev.map(i => i.key === key ? { ...i, cwd: p, cwdDraft: p, sessionId: null, gen: i.gen + 1 } : i));
+    // Changing the folder respawns: kill the old session (if any) so it doesn't
+    // leak in the daemon, forget its id so the panel creates a new one, and bump
+    // gen to remount.
+    setInstances(prev => prev.map(i => {
+      if (i.key !== key) return i;
+      if (i.sessionId != null) api.term.kill(i.sessionId);
+      return { ...i, cwd: p, cwdDraft: p, sessionId: null, gen: i.gen + 1 };
+    }));
   }, [onToast]);
 
   const browse = useCallback(async (key) => {
@@ -206,7 +233,7 @@ export default function TerminalDock({ active, onToast }) {
       </div>
 
       <div className="term-stack">
-        {instances.map(inst => {
+        {restored && instances.map(inst => {
           const show = active && activeKey === inst.key;
           return (
             <div key={inst.key} className="term-slot" style={{ display: show ? 'flex' : 'none' }}>
