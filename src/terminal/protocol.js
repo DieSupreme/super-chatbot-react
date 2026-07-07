@@ -7,16 +7,20 @@ const crypto = require('crypto');
 
 // A stable per-user tag so the app and a previously-spawned daemon agree on the
 // pipe without a rendezvous file. TERM_PIPE_NAME overrides it (tests use a unique
-// tag so they never collide with a real running daemon).
-function userTag() {
+// tag so they never collide with a real running daemon). `override`, when a
+// non-empty string, takes precedence over process.env so callers (e.g. the
+// daemon client) can compute the tag a spawned child will use without
+// mutating process.env themselves.
+function userTag(override) {
+  if (typeof override === 'string' && override) return override;
   if (process.env.TERM_PIPE_NAME) return process.env.TERM_PIPE_NAME;
   const h = crypto.createHash('sha1').update(os.userInfo().username + '|' + os.homedir()).digest('hex').slice(0, 12);
   return 'superchat-term-' + h;
 }
 
 // Named pipe on Windows; unix-domain socket path elsewhere.
-function pipePath() {
-  const tag = userTag();
+function pipePath(tagOverride) {
+  const tag = userTag(tagOverride);
   if (process.platform === 'win32') return '\\\\.\\pipe\\' + tag;
   return path.join(os.tmpdir(), tag + '.sock');
 }

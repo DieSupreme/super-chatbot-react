@@ -36,6 +36,13 @@ test('pipePath honors TERM_PIPE_NAME and is platform-shaped', () => {
   assert.ok(p.includes('unit-test-tag'));
 });
 
+test('pipePath accepts an explicit tag override without touching process.env', () => {
+  delete process.env.TERM_PIPE_NAME;
+  const p = pipePath('override-tag');
+  assert.ok(p.includes('override-tag'));
+  assert.strictEqual(process.env.TERM_PIPE_NAME, undefined);
+});
+
 test('makeToken returns a long hex string, unique per call', () => {
   const a = makeToken(), b = makeToken();
   assert.match(a, /^[0-9a-f]{48}$/);

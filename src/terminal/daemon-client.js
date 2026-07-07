@@ -36,24 +36,18 @@ function createDaemonClient(cfg) {
     s.on('error', () => {});
   }
 
-  // pipePath() derives the pipe name from process.env.TERM_PIPE_NAME. Tests pass
-  // a unique tag via cfg.spawnEnv so a spawned daemon listens on an isolated
-  // pipe — but that env only reaches the spawned child, not this process. To
-  // have the client compute the SAME path the daemon will use, temporarily
-  // apply the same override (if any) just for the pipePath() call.
-  function clientPipePath() {
-    const tag = spawnEnv.TERM_PIPE_NAME;
-    if (!tag) return pipePath();
-    const prev = process.env.TERM_PIPE_NAME;
-    process.env.TERM_PIPE_NAME = tag;
-    try { return pipePath(); } finally {
-      if (prev === undefined) delete process.env.TERM_PIPE_NAME; else process.env.TERM_PIPE_NAME = prev;
-    }
-  }
+  // pipePath() derives the pipe name from process.env.TERM_PIPE_NAME by default.
+  // Tests pass a unique tag via cfg.spawnEnv so a spawned daemon listens on an
+  // isolated pipe — but that env only reaches the spawned child, not this
+  // process. Passing the same tag as an explicit override lets the client
+  // compute the identical path without ever touching process.env. In
+  // production spawnEnv.TERM_PIPE_NAME is undefined, so pipePath() falls back
+  // to the same per-user default the daemon computes from its own env.
+  const clientPipe = () => pipePath(spawnEnv.TERM_PIPE_NAME);
 
   function tryConnect() {
     return new Promise((resolve, reject) => {
-      const s = net.connect(clientPipePath());
+      const s = net.connect(clientPipe());
       s.once('connect', () => resolve(s));
       s.once('error', reject);
     });
