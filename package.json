@@ -1,0 +1,31 @@
+{
+  "name": "super-chatbot-react",
+  "version": "3.0.0",
+  "description": "Super Chatbot — React rebuild. Multi-model AI chat through OpenRouter, with file uploads and permissioned file editing.",
+  "main": "main.js",
+  "scripts": {
+    "build": "vite build",
+    "watch": "vite build --watch",
+    "start": "electron .",
+    "dev": "vite build && electron .",
+    "rebuild": "node scripts/rebuild-node-pty.js",
+    "postinstall": "node scripts/rebuild-node-pty.js"
+  },
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/addon-webgl": "^0.18.0",
+    "@xterm/xterm": "^5.5.0",
+    "node-pty": "^1.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.6.0",
+    "@vitejs/plugin-react": "^4.7.0",
+    "electron": "^33.2.0",
+    "jsdom": "^29.1.1",
+    "vite": "^5.4.21"
+  }
+}
