@@ -152,8 +152,9 @@ export default function TerminalPanel({ active, initialCommand, initialCwd, onRe
         id = r.id; resolvedCwd = r.cwd; fallback = !!r.cwdFallback;
       }
 
-      sessionRef.current = id;
-      if (onSession) onSession(id);
+      // Report the id back to the caller only for freshly created sessions — on
+      // reattach the caller already knows the id (it's how we got here).
+      if (!reattaching && onSession) onSession(id);
 
       // Wire output/exit BEFORE telling main to stream, so the buffered banner /
       // first prompt (held in main until now) is not missed.
@@ -168,9 +169,13 @@ export default function TerminalPanel({ active, initialCommand, initialCwd, onRe
       if (disposed) return;
       if (re && re.ok && re.ring) term.write(re.ring);
 
-      // Flush keys typed while binding.
+      // Flush keys typed while binding, THEN switch term.onData to live routing —
+      // sessionRef.current is set only after the drain, with no await in between,
+      // so a keystroke typed during the reattach round-trip can never jump ahead
+      // of the earlier buffered ones (term.onData buffers while it's still null).
       for (const d of inputBuf) api.term.write(id, d);
       inputBuf = [];
+      sessionRef.current = id;
 
       // Fresh sessions run their launch command once; reattached ones must not.
       if (!reattaching && initialCommand) api.term.write(id, initialCommand + '\r');
