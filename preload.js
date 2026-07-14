@@ -96,6 +96,31 @@ contextBridge.exposeInMainWorld('api', {
       return () => ipcRenderer.removeListener('sd:status', h);
     }
   },
+  // ComfyUI video backend — all HTTP and the progress WebSocket live in main
+  comfy: {
+    status: () => ipcRenderer.invoke('comfy:status'),
+    start: () => ipcRenderer.invoke('comfy:start'),
+    stop: () => ipcRenderer.invoke('comfy:stop'),
+    workflows: () => ipcRenderer.invoke('comfy:workflows'),
+    generate: (p) => ipcRenderer.invoke('comfy:generate', p),
+    interrupt: () => ipcRenderer.invoke('comfy:interrupt'),
+    readVideo: (p) => ipcRenderer.invoke('comfy:readVideo', p),
+    onProgress: (cb) => {
+      const h = (_e, d) => cb(d);
+      ipcRenderer.on('comfy:progress', h);
+      return () => ipcRenderer.removeListener('comfy:progress', h);
+    },
+    onLog: (cb) => {
+      const h = (_e, d) => cb(d);
+      ipcRenderer.on('comfy:log', h);
+      return () => ipcRenderer.removeListener('comfy:log', h);
+    },
+    onStatus: (cb) => {
+      const h = (_e, d) => cb(d);
+      ipcRenderer.on('comfy:status', h);
+      return () => ipcRenderer.removeListener('comfy:status', h);
+    }
+  },
   // embedded terminal (node-pty lives only in main; this is the whole surface)
   term: {
     create: (opts) => ipcRenderer.invoke('term:create', opts),

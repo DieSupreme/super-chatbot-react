@@ -2,6 +2,8 @@
   "sdForgeUrl": "http://127.0.0.1:7860",
   "sdForgePath": "D:\\Devlopment\\AI\\SD-Forge",
   "sdImageDir": "D:\\Devlopment\\AI\\IMG",
+  "comfyUrl": "http://127.0.0.1:8188",
+  "comfyPath": "D:\\Devlopment\\AI\\ComfyUI",
   "sdPresets": {
     "Default (DPM++ 2M Karras)": {
       "sampler_name": "DPM++ 2M",

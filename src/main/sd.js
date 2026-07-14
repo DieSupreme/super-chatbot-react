@@ -5,6 +5,7 @@ const { ipcMain, app: electronApp, BrowserWindow } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const core = require('./sd-core.js');
+const gpuLock = require('./gpu-lock.js');
 const SD_DEFAULTS = require('../sd-defaults.json');
 
 const LOG_CAP = 500;
@@ -95,6 +96,10 @@ function registerSdIpc(app, getWin) {
     const root = readSettings().sdForgePath;
     if (!fs.existsSync(root)) return { ok: false, error: `Forge install not found at ${root}` };
     try {
+      // one GPU: starting Forge stops ComfyUI (and refuses mid-generation)
+      await gpuLock.claim('Forge');
+    } catch (err) { return { ok: false, error: err.message }; }
+    try {
       proc = core.spawnForge(root);
     } catch (err) { proc = null; return { ok: false, error: err.message }; }
     pushLog(`[app] spawn: ${proc.spawnargs.join(' ')} (cwd=${root}, COMMANDLINE_ARGS=${core.FORGE_ARGS}, SD_WEBUI_RESTARTING=1)`);
@@ -131,6 +136,13 @@ function registerSdIpc(app, getWin) {
       }
     }, 2000);
     return { ok: true, status: 'starting' };
+  });
+
+  // mutual exclusion with ComfyUI: registered stopper no-ops when unmanaged
+  gpuLock.register('Forge', {
+    stop: async () => { if (proc) await stopForge(); },
+    isBusy: () => jobActive,
+    isRunning: () => !!proc
   });
 
   async function stopForge() {

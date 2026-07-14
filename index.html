@@ -3,7 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <!-- script-src 'self' (no more unsafe-inline — the React bundle is an external file, so CSP got stricter than the vanilla version) -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src data:;">
+<!-- media-src data: added for inline <video> playback of locally generated
+     clips (loaded as data: URIs over IPC, same trust model as img-src data: —
+     zero network surface). See HANDOFF.md judgment call #2. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src data:; media-src data:;">
 <title>Super Chatbot</title>
 </head>
 <body>
