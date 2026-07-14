@@ -13,7 +13,13 @@ const MODES = [
 // keep huge photos from turning the mask buffer into tens of MB
 const MASK_MAX = 1536;
 
-const T = SCHEMA.txt2img, I2I = SCHEMA.img2img, OVR = SCHEMA.overrides;
+const T = SCHEMA.txt2img, I2I = SCHEMA.img2img, OVR = SCHEMA.overrides, AD = SCHEMA.adetailer;
+
+// one ADetailer detection unit at the extension's schema defaults
+const adUnit = () => ({
+  ad_model: AD.ad_model.def, ad_prompt: AD.ad_prompt.def, ad_negative_prompt: AD.ad_negative_prompt.def,
+  ad_confidence: AD.ad_confidence.def, ad_denoising_strength: AD.ad_denoising_strength.def
+});
 
 // Extended params beyond the Basic row — one state object keyed by the exact
 // schema field name, initialized to the schema defaults (sd-schema.json is the
@@ -119,6 +125,18 @@ export default function SdPanel({ open, onToast, onImage, convoImages }) {
   const setP = useCallback((k, v) => setXp(prev => ({ ...prev, [k]: v })), []);
   // per-generation overrides (sent via override_settings, never persisted)
   const [ovr, setOvr] = useState({ sd_vae: OVR.sd_vae.def, CLIP_stop_at_last_layers: OVR.CLIP_stop_at_last_layers.def });
+  // ADetailer: master toggle + two detection units
+  const [ad, setAd] = useState({ enabled: false, units: [adUnit(), adUnit()] });
+  const [adModels, setAdModels] = useState([]);
+  const setAdUnit = (i, patch) => setAd(prev => ({
+    ...prev, units: prev.units.map((u, x) => x === i ? { ...u, ...patch } : u)
+  }));
+  const toggleAd = (on) => setAd(prev => {
+    const units = prev.units.slice();
+    // spec default when first enabled: unit 1 = face_yolov8n.pt, denoise 0.4
+    if (on && units[0].ad_model === 'None') units[0] = { ...units[0], ad_model: 'face_yolov8n.pt' };
+    return { ...prev, enabled: on, units };
+  });
   // what Forge's global options currently hold — overrides equal to these are omitted
   const [baseOpts, setBaseOpts] = useState({ checkpoint: '', vae: OVR.sd_vae.def, clipSkip: OVR.CLIP_stop_at_last_layers.def });
 
@@ -196,6 +214,15 @@ export default function SdPanel({ open, onToast, onImage, convoImages }) {
   }, []);
 
   useEffect(() => { refresh(); }, [refresh]);
+
+  // ADetailer model list — fetched lazily and re-tried on enable, because the
+  // extension registers its endpoints a few seconds AFTER Forge's API answers
+  useEffect(() => {
+    if (status !== 'running' || adModels.length) return;
+    let alive = true;
+    api.sd.adModels().then(r => { if (alive && r && r.ok) setAdModels(r.models || []); });
+    return () => { alive = false; };
+  }, [status, ad.enabled, adModels.length]);
 
   useEffect(() => {
     const offP = api.sd.onProgress((d) => setProgress(d.done ? { progress: 0, eta: 0 } : d));
@@ -328,6 +355,12 @@ export default function SdPanel({ open, onToast, onImage, convoImages }) {
       sd_vae: pr.sd_vae != null ? pr.sd_vae : prev.sd_vae,
       CLIP_stop_at_last_layers: pr.CLIP_stop_at_last_layers != null ? pr.CLIP_stop_at_last_layers : prev.CLIP_stop_at_last_layers
     }));
+    if (pr.adetailer) {
+      setAd({
+        enabled: !!pr.adetailer.enabled,
+        units: [0, 1].map(i => ({ ...adUnit(), ...((pr.adetailer.units || [])[i] || {}) }))
+      });
+    }
     if (model) {
       const base = (s) => String(s || '').split(/[\\/]/).pop().replace(/\.(safetensors|ckpt)$/i, '').toLowerCase();
       const hit = checkpoints.find(c => base(c.label) === base(model) || base(c.value) === base(model));
@@ -357,7 +390,7 @@ export default function SdPanel({ open, onToast, onImage, convoImages }) {
     }
     setPrompt(parsed.prompt);
     setNegative(parsed.negative);
-    applyParams(parsed.params, parsed.model);
+    applyParams({ ...parsed.params, ...(parsed.adetailer ? { adetailer: parsed.adetailer } : {}) }, parsed.model);
     onToast('Imported settings from PNG' + (parsed.model ? ` (model: ${parsed.model})` : ''));
   };
   const onPanelDrop = (e) => {
@@ -374,7 +407,8 @@ export default function SdPanel({ open, onToast, onImage, convoImages }) {
     steps, cfg_scale: cfg, width, height, sampler_name: sampler || undefined,
     seed, denoising_strength: denoise,
     ...Object.fromEntries(Object.entries(xp).filter(([, v]) => v !== null && v !== '')),
-    sd_vae: ovr.sd_vae, CLIP_stop_at_last_layers: ovr.CLIP_stop_at_last_layers
+    sd_vae: ovr.sd_vae, CLIP_stop_at_last_layers: ovr.CLIP_stop_at_last_layers,
+    adetailer: ad
   });
   const applyPreset = (name) => {
     setPresetSel(name);
@@ -422,6 +456,7 @@ export default function SdPanel({ open, onToast, onImage, convoImages }) {
     if (ovr.sd_vae !== baseOpts.vae) o.sd_vae = ovr.sd_vae;
     if (Number(ovr.CLIP_stop_at_last_layers) !== Number(baseOpts.clipSkip)) o.CLIP_stop_at_last_layers = Number(ovr.CLIP_stop_at_last_layers);
     if (Object.keys(o).length) p.override_settings = o;
+    if (ad.enabled && ad.units.some(u => u.ad_model !== 'None')) p.adetailer = ad;
     return p;
   };
 
@@ -777,6 +812,47 @@ export default function SdPanel({ open, onToast, onImage, convoImages }) {
           </label>
           <NumRow label="CLIP skip" value={ovr.CLIP_stop_at_last_layers} meta={OVR.CLIP_stop_at_last_layers}
             onChange={v => setOvr(o => ({ ...o, CLIP_stop_at_last_layers: v }))} />
+        </Section>
+
+        <Section title="ADetailer"
+          hint={ad.enabled && ad.units.some(u => u.ad_model !== 'None')
+            ? ad.units.filter(u => u.ad_model !== 'None')
+                .map(u => u.ad_model.replace(/\.pt$/, '') + ', ' + u.ad_denoising_strength).join(' · ')
+            : 'off'}>
+          <label className="sd-check">
+            <input type="checkbox" checked={ad.enabled} onChange={e => toggleAd(e.target.checked)} />
+            Detect and refine faces / hands after generation
+          </label>
+          {ad.enabled && ad.units.map((u, i) => (
+            <div key={i} className="sd-ad-unit">
+              <label className="sd-row">Unit {i + 1} — detection model
+                <select value={u.ad_model} onChange={e => setAdUnit(i, { ad_model: e.target.value })}>
+                  <option value="None">(off)</option>
+                  {adModels.map(m => <option key={m} value={m}>{m}</option>)}
+                  {u.ad_model !== 'None' && !adModels.includes(u.ad_model) &&
+                    <option value={u.ad_model}>{u.ad_model}</option>}
+                </select>
+              </label>
+              {u.ad_model !== 'None' && <>
+                <label className="sd-row">Prompt
+                  <textarea rows={2} value={u.ad_prompt} placeholder="(reuse main prompt)"
+                    onChange={e => setAdUnit(i, { ad_prompt: e.target.value })} />
+                </label>
+                <label className="sd-row">Negative prompt
+                  <textarea rows={2} value={u.ad_negative_prompt} placeholder="(reuse main negative)"
+                    onChange={e => setAdUnit(i, { ad_negative_prompt: e.target.value })} />
+                </label>
+                <div className="sd-grid">
+                  <NumRow label="Confidence" value={u.ad_confidence} meta={AD.ad_confidence}
+                    onChange={v => setAdUnit(i, { ad_confidence: v })}
+                    title="minimum detection confidence, 0-1" />
+                  <NumRow label="Denoise" value={u.ad_denoising_strength} meta={AD.ad_denoising_strength}
+                    onChange={v => setAdUnit(i, { ad_denoising_strength: v })}
+                    title="how strongly the detected region is repainted" />
+                </div>
+              </>}
+            </div>
+          ))}
         </Section>
 
         {sourceModes && (

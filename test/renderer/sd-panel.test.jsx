@@ -115,6 +115,37 @@ describe('SdPanel', () => {
     expect(call[1]).toMatchObject({ steps: 25, cfg: 7, width: 1024, height: 1024, sampler: 'DPM++ 2M', scheduler: 'karras' });
   });
 
+  it('ADetailer: off by default and absent from the payload; enabling defaults unit 1 to face_yolov8n', async () => {
+    mock.api.sd.status = async () => ({ ok: true, status: 'running', url: 'http://127.0.0.1:7860', managed: false, log: [] });
+    const { container } = render(<SdPanel open onToast={noop} onImage={noop} convoImages={[]} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Generate' })).toBeEnabled());
+
+    // collapsed section, summary says off
+    const sec = [...container.querySelectorAll('.sd-sec')].find(s => s.textContent.includes('ADetailer'));
+    expect(sec.open).toBe(false);
+    expect(sec.querySelector('summary').textContent).toMatch(/off/);
+
+    // disabled -> no adetailer key in the outgoing params
+    fireEvent.change(screen.getByPlaceholderText(/what to generate/), { target: { value: 'x' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Generate' }));
+    await waitFor(() => expect(mock.calls.some(c => c[0] === 'sd:txt2img')).toBe(true));
+    expect(mock.calls.find(c => c[0] === 'sd:txt2img')[1].adetailer).toBeUndefined();
+
+    // enable: unit 1 defaults to face_yolov8n.pt / 0.4 and the summary updates
+    fireEvent.click(sec.querySelector('summary'));
+    fireEvent.click(sec.querySelector('.sd-check input'));
+    await waitFor(() => expect(sec.querySelector('summary').textContent).toMatch(/face_yolov8n, 0\.4/));
+    expect([...sec.querySelectorAll('select')][0].value).toBe('face_yolov8n.pt');
+
+    mock.calls.length = 0;
+    fireEvent.click(screen.getByRole('button', { name: 'Generate' }));
+    await waitFor(() => expect(mock.calls.some(c => c[0] === 'sd:txt2img')).toBe(true));
+    const p = mock.calls.find(c => c[0] === 'sd:txt2img')[1];
+    expect(p.adetailer.enabled).toBe(true);
+    expect(p.adetailer.units[0].ad_model).toBe('face_yolov8n.pt');
+    expect(p.adetailer.units[0].ad_denoising_strength).toBe(0.4);
+  });
+
   it('dropping a Forge PNG on the panel imports its parameters into the controls', async () => {
     mock.api.sd.status = async () => ({ ok: true, status: 'running', url: 'http://127.0.0.1:7860', managed: false, log: [] });
     mock.api.sd.pngInfo = async () => ({

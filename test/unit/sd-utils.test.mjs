@@ -110,3 +110,22 @@ test('clampParam: enforces schema min/max/step', () => {
   assert.equal(clampParam(0.37, { def: 0, min: 0, max: 1, step: 0.01 }), 0.37);
   assert.equal(clampParam('abc', { def: 50, min: 1, max: 150, step: 1 }), 50);
 });
+
+test('parseInfotext: ADetailer unit params, including a 2nd unit', () => {
+  const r = parseInfotext(
+    'portrait\nSteps: 25, Sampler: DPM++ 2M, CFG scale: 7, Seed: 5, Size: 512x512, ' +
+    'ADetailer model: face_yolov8n.pt, ADetailer confidence: 0.35, ADetailer denoising strength: 0.45, ' +
+    'ADetailer prompt: "detailed face", ADetailer model 2nd: hand_yolov8n.pt, ' +
+    'ADetailer confidence 2nd: 0.5, ADetailer version: 26.2.0');
+  assert.equal(r.adetailer.enabled, true);
+  assert.equal(r.adetailer.units.length, 2);
+  assert.deepEqual(r.adetailer.units[0], {
+    ad_model: 'face_yolov8n.pt', ad_confidence: 0.35, ad_denoising_strength: 0.45, ad_prompt: 'detailed face'
+  });
+  assert.deepEqual(r.adetailer.units[1], { ad_model: 'hand_yolov8n.pt', ad_confidence: 0.5 });
+});
+
+test('parseInfotext: no ADetailer keys -> adetailer undefined', () => {
+  const r = parseInfotext('x\nSteps: 20, Sampler: Euler a, CFG scale: 7, Seed: 1, Size: 512x512');
+  assert.equal(r.adetailer, undefined);
+});

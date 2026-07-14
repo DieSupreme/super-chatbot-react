@@ -255,6 +255,30 @@ function buildTxt2ImgBody(p) {
     body.override_settings = { ...p.override_settings };
     body.override_settings_restore_afterwards = true;
   }
+  // ADetailer (extension v26.2.0): alwayson script with POSITIONAL args —
+  // [enable, skip_img2img, unit1, unit2, ...]. Unit keys verified against
+  // /adetailer/v1/schema; keys left unset take the extension's defaults.
+  // When disabled the whole alwayson_scripts.ADetailer key is OMITTED —
+  // never send an args array with enable=false.
+  if (p.adetailer && p.adetailer.enabled) {
+    const AD = SD_SCHEMA.adetailer;
+    const units = (p.adetailer.units || [])
+      .filter(u => u && u.ad_model && u.ad_model !== 'None')
+      .map(u => {
+        const out = { ad_model: u.ad_model };
+        for (const k of Object.keys(AD)) {
+          if (k === 'ad_model' || k.startsWith('_')) continue;
+          const v = u[k];
+          if (v === undefined || v === null || v === '') continue;
+          if (v === AD[k].def) continue;
+          out[k] = v;
+        }
+        return out;
+      });
+    if (units.length) {
+      body.alwayson_scripts = { ...(body.alwayson_scripts || {}), ADetailer: { args: [true, false, ...units] } };
+    }
+  }
   return body;
 }
 

@@ -73,6 +73,7 @@ contextBridge.exposeInMainWorld('api', {
     lists: (force) => ipcRenderer.invoke('sd:lists', force),
     refreshLists: () => ipcRenderer.invoke('sd:refreshLists'),
     pngInfo: (b64) => ipcRenderer.invoke('sd:pngInfo', b64),
+    adModels: () => ipcRenderer.invoke('sd:adModels'),
     getOptions: () => ipcRenderer.invoke('sd:getOptions'),
     setModel: (title) => ipcRenderer.invoke('sd:setModel', title),
     scanCheckpoints: () => ipcRenderer.invoke('sd:scanCheckpoints'),

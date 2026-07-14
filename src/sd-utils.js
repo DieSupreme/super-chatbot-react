@@ -161,5 +161,27 @@ export function parseInfotext(text) {
     else if (val) params[field] = val;
   }
   if (params.hr_scale != null || params.hr_upscaler || params.hr_resize_x != null) params.enable_hr = true;
-  return { prompt, negative, params, model, raw };
+
+  // ADetailer stamps per-unit params as "ADetailer model: x, ADetailer
+  // confidence: 0.3, ..." with " 2nd"/" 3rd" suffixes for later units.
+  const AD_KEYS = {
+    'model': ['ad_model', 'str'],
+    'prompt': ['ad_prompt', 'str'],
+    'negative prompt': ['ad_negative_prompt', 'str'],
+    'confidence': ['ad_confidence', 'num'],
+    'denoising strength': ['ad_denoising_strength', 'num']
+  };
+  const adUnits = [];
+  for (const [k, v] of Object.entries(raw)) {
+    const mm = k.match(/^ADetailer (.+?)( 2nd| 3rd| 4th)?$/);
+    if (!mm || !(mm[1] in AD_KEYS)) continue;
+    const idx = mm[2] ? { ' 2nd': 1, ' 3rd': 2, ' 4th': 3 }[mm[2]] : 0;
+    const [field, kind] = AD_KEYS[mm[1]];
+    const val = kind === 'num' ? parseFloat(v) : v;
+    if (kind === 'num' && !Number.isFinite(val)) continue;
+    (adUnits[idx] = adUnits[idx] || {})[field] = val;
+  }
+  const adetailer = adUnits.length ? { enabled: true, units: adUnits.filter(Boolean) } : undefined;
+
+  return { prompt, negative, params, model, raw, adetailer };
 }

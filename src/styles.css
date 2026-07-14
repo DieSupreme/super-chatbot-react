@@ -448,6 +448,7 @@ footer { display:flex; padding:12px 16px; background:var(--bg-1); border-top:1px
 .sd-lora-list { display:flex; flex-wrap:wrap; gap:4px; }
 .sd-check { display:flex; align-items:center; gap:7px; font-size:var(--fs-1); color:var(--text-2); margin-bottom:10px; cursor:pointer; }
 .sd-check input { accent-color:var(--hi); }
+.sd-ad-unit { border-top:1px dashed var(--line); padding-top:10px; margin-top:4px; }
 .sd-preset-row { display:flex; gap:6px; margin-bottom:12px; align-items:stretch; }
 .sd-preset-row select { flex:1; min-width:0; }
 .sd-preset-row .set-text { width:90px; }

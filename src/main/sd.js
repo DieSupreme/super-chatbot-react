@@ -205,6 +205,15 @@ function registerSdIpc(app, getWin) {
     };
   });
 
+  // ADetailer's own model list (includes mediapipe pseudo-models a disk scan
+  // would miss). NOTE: extensions register a few seconds AFTER /docs answers,
+  // so this is queried lazily by the panel, never cached at 'running'.
+  ipcMain.handle('sd:adModels', async () => {
+    const r = await getJson('/adetailer/v1/ad_model');
+    if (!r.ok) return r;
+    return { ok: true, models: (r.data && r.data.ad_model) || [] };
+  });
+
   // PNG-info: recover the generation parameters embedded in a Forge PNG
   ipcMain.handle('sd:pngInfo', async (_e, b64) => {
     try {

@@ -68,6 +68,7 @@ export function createMockApi() {
       }),
       refreshLists: async () => { calls.push(['sd:refreshLists']); return { ok: true }; },
       pngInfo: async (b64) => { calls.push(['sd:pngInfo', b64]); return { ok: true, info: '', items: {} }; },
+      adModels: async () => ({ ok: true, models: ['face_yolov8n.pt', 'hand_yolov8n.pt', 'mediapipe_face_full'] }),
       getOptions: async () => ({ ok: true, checkpoint: '', vae: 'Automatic', clipSkip: 1 }),
       setModel: async () => ({ ok: true }),
       scanCheckpoints: async () => ({ ok: true, list: [] }),

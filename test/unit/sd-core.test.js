@@ -180,6 +180,41 @@ test('buildTxt2ImgBody: refiner + override_settings with restore flag', () => {
   assert.equal(none.override_settings, undefined);
 });
 
+test('buildTxt2ImgBody: ADetailer args built positionally, defaults omitted', () => {
+  const body = core.buildTxt2ImgBody({
+    prompt: 'p',
+    adetailer: {
+      enabled: true,
+      units: [
+        { ad_model: 'face_yolov8n.pt', ad_prompt: '', ad_negative_prompt: '', ad_confidence: 0.3, ad_denoising_strength: 0.5 },
+        { ad_model: 'None', ad_prompt: 'x' }   // unit off -> dropped entirely
+      ]
+    }
+  });
+  const args = body.alwayson_scripts.ADetailer.args;
+  assert.equal(args[0], true);       // enable
+  assert.equal(args[1], false);      // skip img2img
+  assert.equal(args.length, 3);      // one active unit
+  assert.deepEqual(args[2], { ad_model: 'face_yolov8n.pt', ad_denoising_strength: 0.5 }); // defaults + empties omitted
+});
+
+test('buildTxt2ImgBody: ADetailer key absent when disabled or unitless', () => {
+  assert.equal(core.buildTxt2ImgBody({ prompt: 'p' }).alwayson_scripts, undefined);
+  assert.equal(core.buildTxt2ImgBody({
+    prompt: 'p', adetailer: { enabled: false, units: [{ ad_model: 'face_yolov8n.pt' }] }
+  }).alwayson_scripts, undefined);
+  assert.equal(core.buildTxt2ImgBody({
+    prompt: 'p', adetailer: { enabled: true, units: [{ ad_model: 'None' }] }
+  }).alwayson_scripts, undefined);
+});
+
+test('buildImg2ImgBody: ADetailer flows through from the shared builder', () => {
+  const body = core.buildImg2ImgBody({
+    prompt: 'p', adetailer: { enabled: true, units: [{ ad_model: 'hand_yolov8n.pt', ad_confidence: 0.5 }] }
+  }, 'B64');
+  assert.deepEqual(body.alwayson_scripts.ADetailer.args, [true, false, { ad_model: 'hand_yolov8n.pt', ad_confidence: 0.5 }]);
+});
+
 test('buildTxt2ImgBody: styles array sent only when non-empty', () => {
   assert.deepEqual(core.buildTxt2ImgBody({ prompt: 'p', styles: ['cinematic'] }).styles, ['cinematic']);
   assert.equal(core.buildTxt2ImgBody({ prompt: 'p', styles: [] }).styles, undefined);
