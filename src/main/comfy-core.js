@@ -97,13 +97,38 @@ function videoFileName(dir, seed, ext = 'mp4', now = new Date()) {
   return name;
 }
 
-// ---------- minimal WebSocket client (receive-oriented, builtins only) ----------
-// Electron 33's main process is Node 20.18 — no global WebSocket. ComfyUI's
-// /ws only needs us to RECEIVE JSON events; we never send text. Handles the
-// RFC 6455 upgrade, unmasked server frames (text/ping/close), fragmented
-// continuation, and replies to pings with a masked pong. Binary preview
-// frames (opcode 2) are skipped.
-function openWs(url, { onMessage, onClose } = {}) {
+// ---------- WebSocket client ----------
+// Electron 43's main process (Node 22+) ships a native global WebSocket —
+// preferred when present. The manual RFC 6455 client below stays as the
+// tested fallback for older runtimes. Either way ComfyUI's /ws only needs us
+// to RECEIVE JSON events; binary preview frames are skipped.
+function openWs(url, handlers) {
+  return typeof WebSocket === 'function' ? openNativeWs(url, handlers) : openManualWs(url, handlers);
+}
+
+function openNativeWs(url, { onMessage, onClose } = {}) {
+  const ws = new WebSocket(url.replace(/^http/, 'ws'));
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    try { ws.close(); } catch (_) {}
+    onClose && onClose();
+  };
+  ws.onmessage = (ev) => {
+    if (typeof ev.data !== 'string') return;   // binary preview frames
+    try { onMessage && onMessage(JSON.parse(ev.data)); } catch (_) {}
+  };
+  ws.onclose = close;
+  ws.onerror = close;
+  return { close, get open() { return ws.readyState === 1 && !closed; } };
+}
+
+// Manual receive-oriented RFC 6455 client on http+crypto builtins: upgrade
+// handshake, unmasked server frames (text/ping/close), fragmented
+// continuation, masked pong replies. Kept fully tested — it is the fallback
+// if the app ever runs on a WebSocket-less Node again.
+function openManualWs(url, { onMessage, onClose } = {}) {
   const u = new URL(url);
   const key = crypto.randomBytes(16).toString('base64');
   let socket = null, closed = false;
@@ -178,5 +203,5 @@ function openWs(url, { onMessage, onClose } = {}) {
 module.exports = {
   detectComfyLayout, spawnComfy,
   listWorkflows, loadWorkflow, patchWorkflow,
-  videoFileName, openWs
+  videoFileName, openWs, openNativeWs, openManualWs
 };

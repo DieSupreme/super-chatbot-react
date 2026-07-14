@@ -80,11 +80,14 @@ test('detectComfyLayout: portable vs clone', () => {
   assert.equal(c.python, 'python');
 });
 
-test('openWs: RFC6455 handshake, text frames, fragmentation, ping->pong', async () => {
-  const got = [];
-  let pongSeen = null;
+// toy RFC6455 server: handshake, then a text frame, a fragmented text
+// message, and a ping — records whether the client answered with a pong
+function makeWsServer() {
+  const state = { pongSeen: false };
+  const sockets = [];
   const server = http.createServer();
   server.on('upgrade', (req, socket) => {
+    sockets.push(socket);
     const accept = crypto.createHash('sha1')
       .update(req.headers['sec-websocket-key'] + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11')
       .digest('base64');
@@ -92,20 +95,46 @@ test('openWs: RFC6455 handshake, text frames, fragmentation, ping->pong', async 
       `Sec-WebSocket-Accept: ${accept}\r\n\r\n`);
     const text = (s) => Buffer.concat([Buffer.from([0x81, s.length]), Buffer.from(s)]);
     socket.write(text(JSON.stringify({ type: 'hello' })));
-    // fragmented message: "{"type":"frag"}" split across two frames
     const whole = JSON.stringify({ type: 'frag' });
     const p1 = whole.slice(0, 5), p2 = whole.slice(5);
     socket.write(Buffer.concat([Buffer.from([0x01, p1.length]), Buffer.from(p1)]));
     socket.write(Buffer.concat([Buffer.from([0x80, p2.length]), Buffer.from(p2)]));
     socket.write(Buffer.from([0x89, 0x00]));   // ping, empty
-    socket.on('data', (d) => { if ((d[0] & 0x0f) === 0x0a) pongSeen = true; });
+    socket.on('data', (d) => { if ((d[0] & 0x0f) === 0x0a) state.pongSeen = true; });
+    socket.on('error', () => {});
   });
+  // upgraded sockets leave the server's connection tracking, so
+  // closeAllConnections() misses them — destroy them by hand or the native
+  // WebSocket client waits forever for a close reply and pins the event loop
+  const destroy = () => {
+    for (const s of sockets) { try { s.destroy(); } catch (_) {} }
+    server.close();
+  };
+  return { server, state, destroy };
+}
+
+test('openManualWs: RFC6455 handshake, text frames, fragmentation, ping->pong', async () => {
+  const got = [];
+  const { server, state, destroy } = makeWsServer();
   await new Promise(r => server.listen(0, '127.0.0.1', r));
-  const port = server.address().port;
-  const ws = core.openWs(`http://127.0.0.1:${port}/ws?clientId=t`, { onMessage: (m) => got.push(m.type) });
+  const ws = core.openManualWs(`http://127.0.0.1:${server.address().port}/ws?clientId=t`,
+    { onMessage: (m) => got.push(m.type) });
   await new Promise(r => setTimeout(r, 300));
   ws.close();
-  server.close();
+  destroy();
   assert.deepEqual(got, ['hello', 'frag']);
-  assert.equal(pongSeen, true);
+  assert.equal(state.pongSeen, true);
+});
+
+test('openWs: prefers the native WebSocket when the runtime has one', async (t) => {
+  if (typeof WebSocket !== 'function') { t.skip('no native WebSocket in this runtime'); return; }
+  const got = [];
+  const { server, destroy } = makeWsServer();
+  await new Promise(r => server.listen(0, '127.0.0.1', r));
+  const ws = core.openWs(`http://127.0.0.1:${server.address().port}/ws?clientId=t`,
+    { onMessage: (m) => got.push(m.type) });
+  await new Promise(r => setTimeout(r, 400));
+  ws.close();
+  destroy();
+  assert.deepEqual(got, ['hello', 'frag']);
 });
