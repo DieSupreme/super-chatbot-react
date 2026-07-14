@@ -59,6 +59,38 @@ contextBridge.exposeInMainWorld('api', {
   // settings
   getSettings: () => ipcRenderer.invoke('settings:get'),
   saveSettings: (s) => ipcRenderer.invoke('settings:save', s),
+  // local Stable Diffusion via Forge — all HTTP happens in main; the renderer
+  // CSP allows no network. Progress/log/status arrive as events, not polling.
+  sd: {
+    status: () => ipcRenderer.invoke('sd:status'),
+    start: () => ipcRenderer.invoke('sd:start'),
+    stop: () => ipcRenderer.invoke('sd:stop'),
+    txt2img: (p) => ipcRenderer.invoke('sd:txt2img', p),
+    img2img: (p) => ipcRenderer.invoke('sd:img2img', p),
+    interrupt: () => ipcRenderer.invoke('sd:interrupt'),
+    models: () => ipcRenderer.invoke('sd:models'),
+    samplers: () => ipcRenderer.invoke('sd:samplers'),
+    getOptions: () => ipcRenderer.invoke('sd:getOptions'),
+    setModel: (title) => ipcRenderer.invoke('sd:setModel', title),
+    scanCheckpoints: () => ipcRenderer.invoke('sd:scanCheckpoints'),
+    scanLoras: () => ipcRenderer.invoke('sd:scanLoras'),
+    readImage: (p) => ipcRenderer.invoke('sd:readImage', p),
+    onProgress: (cb) => {
+      const h = (_e, d) => cb(d);
+      ipcRenderer.on('sd:progress', h);
+      return () => ipcRenderer.removeListener('sd:progress', h);
+    },
+    onLog: (cb) => {
+      const h = (_e, d) => cb(d);
+      ipcRenderer.on('sd:log', h);
+      return () => ipcRenderer.removeListener('sd:log', h);
+    },
+    onStatus: (cb) => {
+      const h = (_e, d) => cb(d);
+      ipcRenderer.on('sd:status', h);
+      return () => ipcRenderer.removeListener('sd:status', h);
+    }
+  },
   // embedded terminal (node-pty lives only in main; this is the whole surface)
   term: {
     create: (opts) => ipcRenderer.invoke('term:create', opts),

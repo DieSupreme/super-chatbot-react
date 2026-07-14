@@ -3,6 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const zlib = require('zlib');
 const { registerTerminalIpc } = require('./src/terminal/pty.js');
+const { registerSdIpc } = require('./src/main/sd.js');
 const { createSseState, drainSseBuffer } = require('./src/main/sse.js');
 
 const KEY_FILE = path.join(app.getPath('userData'), 'or-key.bin');
@@ -56,7 +57,7 @@ function createWindow() {
   });
 }
 
-app.whenReady().then(() => { loadAllowed(); registerTerminalIpc(app, () => win); createWindow(); });
+app.whenReady().then(() => { loadAllowed(); registerTerminalIpc(app, () => win); registerSdIpc(app, () => win); createWindow(); });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 

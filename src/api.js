@@ -20,9 +20,17 @@ const stubTerm = {
   onData: () => () => {},
   onExit: () => () => {}
 };
+const stubSd = {
+  status: stubFn, start: stubFn, stop: stubFn,
+  txt2img: stubFn, img2img: stubFn, interrupt: stubFn,
+  models: stubFn, samplers: stubFn, getOptions: stubFn, setModel: stubFn,
+  scanCheckpoints: stubFn, scanLoras: stubFn, readImage: stubFn,
+  onProgress: () => () => {}, onLog: () => () => {}, onStatus: () => () => {}
+};
 const stub = new Proxy({}, {
   get: (_t, name) => {
     if (name === 'term') return stubTerm;
+    if (name === 'sd') return stubSd;
     if (name === 'readClipboard') return () => '';
     if (name === 'writeClipboard') return () => {};
     if (name === 'getPathForFile') return () => null;

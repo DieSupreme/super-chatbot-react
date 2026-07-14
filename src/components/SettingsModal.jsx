@@ -38,6 +38,21 @@ export default function SettingsModal({ open, onClose, settings, update }) {
           </select>
         </label>
 
+        <label className="set-row">Forge URL (local Stable Diffusion)
+          <input type="text" className="set-text" value={settings.sdForgeUrl}
+            onChange={e => update({ sdForgeUrl: e.target.value })} spellCheck="false" />
+        </label>
+
+        <label className="set-row">Forge install folder
+          <input type="text" className="set-text" value={settings.sdForgePath}
+            onChange={e => update({ sdForgePath: e.target.value })} spellCheck="false" />
+        </label>
+
+        <label className="set-row">Generated images folder
+          <input type="text" className="set-text" value={settings.sdImageDir}
+            onChange={e => update({ sdImageDir: e.target.value })} spellCheck="false" />
+        </label>
+
         <div className="set-note">Settings are saved on this device and apply to new messages.</div>
       </div>
     </div>

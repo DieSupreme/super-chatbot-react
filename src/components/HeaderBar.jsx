@@ -5,7 +5,7 @@ export default function HeaderBar({
   model, setModel, keyVal, setKeyVal, keyCompact, setKeyCompact, onSaveKey,
   cost, memory, setMemory, web, setWeb, imageMode, setImageMode,
   onToggleSysPrompt, onToggleSide, onOpenSettings, keyFieldRef,
-  view, onToggleView
+  view, onToggleView, sdOpen, onToggleSd
 }) {
   const keyOk = keyVal.trim().startsWith('sk-or-');
   const keyState = keyOk ? 'key ready' : (keyVal ? 'check key' : 'no key');
@@ -45,6 +45,8 @@ export default function HeaderBar({
 
       <button className="ghost" onClick={onToggleSysPrompt} title="Set standing instructions for this chat">Instructions</button>
       <button className="ghost" onClick={onToggleSide}>Files</button>
+      <button className={'ghost' + (sdOpen ? ' active' : '')} onClick={onToggleSd}
+        title="Local Stable Diffusion via Forge">🎨 SD</button>
       <button className={'ghost' + (view === 'terminal' ? ' active' : '')} onClick={onToggleView}
         title="Toggle the embedded terminal">{view === 'terminal' ? '💬 Chat' : '⌗ Terminal'}</button>
       <button className="ghost" onClick={onOpenSettings} title="Settings">⚙</button>

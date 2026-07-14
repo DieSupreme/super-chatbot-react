@@ -17,9 +17,14 @@ export const IMG_MODELS = [
 
 export const ASPECTS = ['1:1', '16:9', '9:16', '4:3', '3:2', 'auto'];
 
+// Forge defaults live in sd-defaults.json so main (require) and the renderer
+// (import) read the same values — never hardcode those paths anywhere else.
+import sdDefaults from './sd-defaults.json' with { type: 'json' };
+
 export const DEFAULT_SETTINGS = {
   temp: 1.0, maxTok: 4096, defaultModel: '',
-  imgModel: 'google/gemini-3.1-flash-image', imgAspect: '1:1'
+  imgModel: 'google/gemini-3.1-flash-image', imgAspect: '1:1',
+  ...sdDefaults
 };
 
 export function modelLabel(id) {

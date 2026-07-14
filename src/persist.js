@@ -14,5 +14,7 @@ export function toPersistedMessage(m) {
   if (m.attachNames?.length) out.attachNames = m.attachNames;
   if (m.reasoning) out.reasoning = m.reasoning;
   if (m.citations?.length) out.citations = m.citations;
+  // local SD images live on disk — persist only the path, never the pixels
+  if (m.imagePath) out.imagePath = m.imagePath;
   return out;
 }

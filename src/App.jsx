@@ -11,6 +11,7 @@ import ChatLog from './components/ChatLog.jsx';
 import Composer from './components/Composer.jsx';
 import { SidePanel, SysPromptBar, Toasts, DropZone } from './components/Panels.jsx';
 import TerminalDock from './components/TerminalDock.jsx';
+import SdPanel from './components/SdPanel.jsx';
 import { toPersistedMessage } from './persist.js';
 
 let uidCounter = 0;
@@ -32,6 +33,13 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showSysBar, setShowSysBar] = useState(false);
   const [sideOpen, setSideOpen] = useState(false);
+
+  // ---------- local Stable Diffusion panel ----------
+  // Mounted lazily on first open (no Forge probing until then), then kept
+  // alive across toggles so form state and the process log survive.
+  const [sdOpen, setSdOpen] = useState(false);
+  const [sdMounted, setSdMounted] = useState(false);
+  const toggleSd = () => setSdOpen(o => { if (!o) setSdMounted(true); return !o; });
 
   // ---------- embedded terminal ----------
   // 'chat' | 'terminal'. The terminal is a full-area view that replaces the chat
@@ -207,10 +215,12 @@ export default function App() {
     if (c.model) setModel(c.model);
     const who = modelLabel(c.model || stateRef.current.model);
     setMessages((c.messages || []).map(m => attachThinkToggle({
-      uid: newUid(), role: m.role, content: m.content, who,
+      uid: newUid(), role: m.role, content: m.content,
+      who: m.imagePath ? 'Stable Diffusion' : who,
       attachNames: m.attachNames,
       reasoning: m.reasoning,
       citations: m.citations,
+      imagePath: m.imagePath,
       thinkOpen: m.reasoning ? false : undefined
     })));
     refreshConvos();
@@ -544,6 +554,37 @@ export default function App() {
     }
   }
 
+  // ================= local SD results =================
+  // The panel hands back {path, prompt, seed}; the image lives on disk and the
+  // chat message carries only the path — SdImage in ChatLog loads pixels via
+  // IPC on mount, so no big base64 sits in React state.
+  async function appendSdImage({ path, prompt, seed }) {
+    if (!messagesRef.current.length) {
+      const t = '🎨 ' + prompt.slice(0, 38);
+      setCurrentTitle(t);
+      stateRef.current.currentTitle = t;
+    }
+    setMessages([...messagesRef.current, {
+      uid: newUid(), role: 'assistant', who: 'Stable Diffusion',
+      content: `[SD image: ${prompt}]` + (seed != null ? ` (seed ${seed})` : ''),
+      imagePath: path
+    }]);
+    await persistConvo(messagesRef.current);
+  }
+
+  // images already in this conversation, offered as img2img sources
+  const convoImages = [];
+  for (const m of messages) {
+    if (m.imagePath) convoImages.push({ label: m.imagePath.split(/[\\/]/).pop(), path: m.imagePath });
+    else if (m.image && m.image.b64) convoImages.push({ label: 'generated image', b64: m.image.b64, mime: m.image.mime });
+    else if (Array.isArray(m.content)) {
+      for (const p of m.content) {
+        const mm = p.type === 'image_url' && p.image_url && String(p.image_url.url).match(/^data:([^;]+);base64,(.+)$/);
+        if (mm) convoImages.push({ label: `attached image ${convoImages.length + 1}`, b64: mm[2], mime: mm[1] });
+      }
+    }
+  }
+
   // ================= regenerate / retry / edit-last =================
   async function regenerate() {
     if (isStreamingRef.current) return;
@@ -587,6 +628,7 @@ export default function App() {
         imageMode={imageMode} setImageMode={setImageMode}
         onToggleSysPrompt={() => setShowSysBar(s => !s)}
         onToggleSide={toggleSide}
+        sdOpen={sdOpen} onToggleSd={toggleSd}
         onOpenSettings={() => setShowSettings(true)}
         view={view} onToggleView={toggleView}
       />
@@ -608,6 +650,8 @@ export default function App() {
           isStreaming={isStreaming}
           onRetryLast={regenerate} onRegenerate={regenerate} onEditLast={editLastUserMessage}
           onToast={toast} />
+
+        {sdMounted && <SdPanel open={sdOpen} onToast={toast} onImage={appendSdImage} convoImages={convoImages} />}
 
         <SidePanel open={sideOpen} paths={allowPaths} onAdd={addAllow} onRemove={removeAllow} />
       </div>

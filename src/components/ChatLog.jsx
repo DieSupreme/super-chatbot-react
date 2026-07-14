@@ -82,6 +82,35 @@ function GenImage({ image, prompt, onToast }) {
   );
 }
 
+// ---------- local SD image (on disk; loaded via IPC on mount) ----------
+// Only the file path lives in message state — pixels are fetched when the
+// bubble mounts and stay in this component's local state.
+function SdImage({ path, prompt, onToast }) {
+  const [img, setImg] = useState(null);      // { b64, mime } | 'missing'
+  useEffect(() => {
+    let alive = true;
+    api.sd.readImage(path).then(r => {
+      if (alive) setImg(r && r.ok ? { b64: r.b64, mime: r.mime } : 'missing');
+    });
+    return () => { alive = false; };
+  }, [path]);
+  if (img === 'missing') return <span className="err">image not found: {path}</span>;
+  if (!img) return <span className="dots">loading image</span>;
+  const save = async () => {
+    const s = await api.saveImage({ b64: img.b64, mime: img.mime });
+    if (s.ok) onToast('Image saved');
+  };
+  return (
+    <>
+      <img className="gen-img" src={`data:${img.mime};base64,${img.b64}`} alt={prompt} />
+      <div className="gen-actions">
+        <button onClick={save}>Save a copy</button>
+        <span className="sd-file" title={path}>{path.split(/[\\/]/).pop()}</span>
+      </div>
+    </>
+  );
+}
+
 // ---------- one message ----------
 function MessageBubble({ m, isLatestAi, isStreamingAny, onRetry, onRegenerate, onEditLast, onToast }) {
   const [copied, setCopied] = useState(false);
@@ -90,8 +119,8 @@ function MessageBubble({ m, isLatestAi, isStreamingAny, onRetry, onRegenerate, o
 
   // parse once per content change; segments feed Markdown, the zip bar, and edit cards
   const segments = useMemo(
-    () => (!isUser && !m.streaming && !m.error && !m.image && !m.imagePending) ? parseSegments(m.content || '') : [],
-    [isUser, m.streaming, m.error, m.image, m.imagePending, m.content]
+    () => (!isUser && !m.streaming && !m.error && !m.image && !m.imagePath && !m.imagePending) ? parseSegments(m.content || '') : [],
+    [isUser, m.streaming, m.error, m.image, m.imagePath, m.imagePending, m.content]
   );
   const codeFiles = useMemo(() => segments.filter(s => s.kind === 'code'), [segments]);
   const editSegs = useMemo(() => segments.filter(s => s.kind === 'edit'), [segments]);
@@ -114,6 +143,8 @@ function MessageBubble({ m, isLatestAi, isStreamingAny, onRetry, onRegenerate, o
     body = <span className="dots">generating image</span>;
   } else if (m.image) {
     body = <GenImage image={m.image} prompt={rawText} onToast={onToast} />;
+  } else if (m.imagePath) {
+    body = <SdImage path={m.imagePath} prompt={rawText} onToast={onToast} />;
   } else if (!isUser && m.streaming) {
     body = m.fresh ? <span className="dots">thinking</span> : <span className="stream-text">{m.content}</span>;
   } else if (!isUser) {
