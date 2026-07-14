@@ -38,9 +38,12 @@ function scanModelDir(dir, exts) {
 
 const CKPT_EXTS = new Set(['.safetensors', '.ckpt']);
 const LORA_EXTS = new Set(['.safetensors', '.ckpt', '.pt']);
+const VAE_EXTS = new Set(['.safetensors', '.ckpt', '.pt']);
 
 function scanCheckpoints(base) { return scanModelDir(path.join(base, 'models', 'Stable-diffusion'), CKPT_EXTS); }
 function scanLoras(base) { return scanModelDir(path.join(base, 'models', 'Lora'), LORA_EXTS); }
+// /sdapi/v1/sd-vae is a 404 in Forge f2.0.1, so the VAE dropdown scans disk
+function scanVae(base) { return scanModelDir(path.join(base, 'models', 'VAE'), VAE_EXTS); }
 
 // ---------- checkpoint reconcile ----------
 // Disk scan populates the dropdown while Forge is stopped; when it's running,
@@ -72,9 +75,18 @@ function reconcileCheckpoints(diskList, apiList) {
 // variant only applies under --nowebui, and Forge loads weights on demand anyway.
 const FORGE_ARGS = '--api --xformers';
 
+// Forge's browser auto-open is driven by the `auto_launch_browser` *setting*
+// (default "Local"), not by a flag — f2.0.1 has no CLI flag to turn it off,
+// only --autolaunch to force it on. webui.py skips the whole auto-launch block
+// when SD_WEBUI_RESTARTING=1 (its only effect), so set it to guarantee an
+// app-spawned Forge never opens a tab regardless of the user's config.json.
+function forgeSpawnEnv() {
+  return { ...process.env, COMMANDLINE_ARGS: FORGE_ARGS, SD_WEBUI_RESTARTING: '1' };
+}
+
 function spawnForge(root) {
   const layout = detectLayout(root);
-  const env = { ...process.env, COMMANDLINE_ARGS: FORGE_ARGS };
+  const env = forgeSpawnEnv();
   if (process.platform === 'win32') {
     // .\ prefixes are required: if NoDefaultCurrentDirectoryInExePath is set
     // in the parent env, cmd refuses to resolve bare .bat names from the cwd.
@@ -186,25 +198,75 @@ function scaleMask(data, w, h, w2, h2) {
 // ---------- request bodies ----------
 // Built here (electron-free) so tests and harnesses exercise the exact JSON
 // the app POSTs to /sdapi/v1/txt2img and /sdapi/v1/img2img.
+//
+// Contract: fields the user never touched are OMITTED (Forge then applies its
+// own schema default) — values equal to the schema default in sd-schema.json
+// are dropped, nulls are dropped, everything else is sent verbatim. The hires
+// block only exists when enable_hr is on, the refiner block only when a
+// refiner checkpoint is picked, and override_settings always travels with
+// override_settings_restore_afterwards: true so a per-generation override
+// (VAE / CLIP skip / checkpoint) never permanently mutates Forge's options.
+const SD_SCHEMA = require('../sd-schema.json');
+
+// copy p[k] into body for every schema field that differs from its default
+function applySchemaFields(body, p, fields, skip) {
+  for (const k of Object.keys(fields)) {
+    if (skip && skip.has(k)) continue;
+    const v = p[k];
+    if (v === undefined || v === null) continue;
+    if (Array.isArray(v)) { if (v.length) body[k] = v; continue; }
+    if (fields[k].def !== null && v === fields[k].def) continue;
+    body[k] = v;
+  }
+}
+
+const HR_FIELDS = new Set(Object.keys(SD_SCHEMA.txt2img).filter(k => k === 'enable_hr' || k.startsWith('hr_')));
+const REFINER_FIELDS = new Set(['refiner_checkpoint', 'refiner_switch_at']);
+const SD_SCHEMA_NON_HR = Object.keys(SD_SCHEMA.txt2img).filter(k => !HR_FIELDS.has(k));
+
 function buildTxt2ImgBody(p) {
-  return {
+  const body = {
     prompt: String(p.prompt || ''),
     negative_prompt: String(p.negative || ''),
-    steps: Number(p.steps) || 25,
-    cfg_scale: Number(p.cfg) || 7,
-    width: Number(p.width) || 1024,
-    height: Number(p.height) || 1024,
-    sampler_name: p.sampler || 'Euler a',
+    steps: Number(p.steps) || SD_SCHEMA.txt2img.steps.def,
+    cfg_scale: Number(p.cfg) || SD_SCHEMA.txt2img.cfg_scale.def,
+    width: Number(p.width) || SD_SCHEMA.txt2img.width.def,
+    height: Number(p.height) || SD_SCHEMA.txt2img.height.def,
     seed: Number.isFinite(Number(p.seed)) ? Number(p.seed) : -1
   };
+  const sampler = p.sampler || p.sampler_name;
+  if (sampler) body.sampler_name = sampler;
+  applySchemaFields(body, p, SD_SCHEMA.txt2img, new Set([...HR_FIELDS, ...REFINER_FIELDS,
+    'seed', 'steps', 'cfg_scale', 'width', 'height', 'sampler_name']));
+  if (p.enable_hr) {
+    body.enable_hr = true;
+    // Forge f2.0.1 API bug: hr_additional_modules schema-defaults to null but
+    // processing.py:1405 iterates it -> 500 "NoneType is not iterable". The
+    // Forge UI's own default is ["Use same choices"]; mirror that unless the
+    // caller picked modules explicitly.
+    body.hr_additional_modules = Array.isArray(p.hr_additional_modules) ? p.hr_additional_modules : ['Use same choices'];
+    applySchemaFields(body, p, SD_SCHEMA.txt2img, new Set([...SD_SCHEMA_NON_HR, 'enable_hr', 'hr_additional_modules']));
+  }
+  if (p.refiner_checkpoint) {
+    body.refiner_checkpoint = p.refiner_checkpoint;
+    if (p.refiner_switch_at != null) body.refiner_switch_at = p.refiner_switch_at;
+  }
+  if (p.override_settings && Object.keys(p.override_settings).length) {
+    body.override_settings = { ...p.override_settings };
+    body.override_settings_restore_afterwards = true;
+  }
+  return body;
 }
 
 function buildImg2ImgBody(p, initB64) {
   const body = {
     ...buildTxt2ImgBody(p),
-    init_images: [initB64],
-    denoising_strength: Number.isFinite(Number(p.denoise)) ? Number(p.denoise) : 0.5
+    init_images: [initB64]
   };
+  // legacy short name from the panel's original slider; schema name wins
+  const denoise = p.denoising_strength != null ? p.denoising_strength : p.denoise;
+  if (Number.isFinite(Number(denoise))) body.denoising_strength = Number(denoise);
+  applySchemaFields(body, p, SD_SCHEMA.img2img, new Set(['denoising_strength']));
   // inpaint: mask arrives as raw pixels; scale it to the source image's exact
   // dimensions, then encode. White = repaint.
   if (p.maskData && p.maskData.data) {
@@ -212,9 +274,6 @@ function buildImg2ImgBody(p, initB64) {
     const tw = Number(p.srcW) || width;
     const th = Number(p.srcH) || height;
     body.mask = encodeMaskPng(tw, th, scaleMask(data, width, height, tw, th));
-    body.inpainting_fill = 1;
-    body.inpaint_full_res = true;
-    body.inpaint_full_res_padding = 32;
   }
   return body;
 }
@@ -231,7 +290,7 @@ function imageFileName(dir, seed, now = new Date()) {
 }
 
 module.exports = {
-  detectLayout, scanCheckpoints, scanLoras, reconcileCheckpoints,
-  FORGE_ARGS, spawnForge, killTree, portInUse, waitPortFree,
+  detectLayout, scanCheckpoints, scanLoras, scanVae, reconcileCheckpoints,
+  FORGE_ARGS, forgeSpawnEnv, spawnForge, killTree, portInUse, waitPortFree,
   encodeMaskPng, scaleMask, buildTxt2ImgBody, buildImg2ImgBody, imageFileName
 };

@@ -80,6 +80,14 @@ test('FORGE_ARGS carries the API flag', () => {
   assert.match(core.FORGE_ARGS, /--api/);
 });
 
+test('spawn env never lets Forge open a browser', () => {
+  const env = core.forgeSpawnEnv();
+  assert.equal(env.COMMANDLINE_ARGS, core.FORGE_ARGS);
+  assert.equal(env.SD_WEBUI_RESTARTING, '1');   // webui.py skips auto-launch when set
+  assert.doesNotMatch(core.FORGE_ARGS, /--autolaunch/);
+  assert.doesNotMatch(core.FORGE_ARGS, /--nowebui/);
+});
+
 test('scaleMask: nearest-neighbour up and down, identity when equal', () => {
   const src = Uint8Array.from([255, 0, 0, 255]);   // 2x2 checker
   assert.equal(core.scaleMask(src, 2, 2, 2, 2), src);   // identity: same buffer
@@ -92,18 +100,19 @@ test('scaleMask: nearest-neighbour up and down, identity when equal', () => {
   assert.deepEqual([...down], [255, 0, 0, 255]);
 });
 
-test('buildImg2ImgBody: mask scaled to srcW/srcH, inpaint fields set', () => {
+test('buildImg2ImgBody: mask scaled to srcW/srcH, user inpaint fields sent', () => {
   const zlib = require('zlib');
   const body = core.buildImg2ImgBody({
     prompt: 'p', steps: 6, cfg: 7, width: 512, height: 512,
     sampler: 'Euler a', seed: 1, denoise: 0.6,
+    inpainting_fill: 1, inpaint_full_res_padding: 32,
     maskData: { width: 2, height: 2, data: Uint8Array.from([255, 0, 0, 0]) },
     srcW: 8, srcH: 8
   }, 'INITB64');
   assert.deepEqual(body.init_images, ['INITB64']);
   assert.equal(body.denoising_strength, 0.6);
   assert.equal(body.inpainting_fill, 1);
-  assert.equal(body.inpaint_full_res, true);
+  assert.equal(body.inpaint_full_res, undefined);   // schema default (true) -> omitted
   assert.equal(body.inpaint_full_res_padding, 32);
   const png = Buffer.from(body.mask, 'base64');
   assert.equal(png.readUInt32BE(16), 8);   // mask width == srcW
@@ -113,10 +122,65 @@ test('buildImg2ImgBody: mask scaled to srcW/srcH, inpaint fields set', () => {
   assert.equal(raw[9 + 7], 0);      // (7,1) black
 });
 
-test('buildImg2ImgBody: no mask -> plain img2img body', () => {
-  const body = core.buildImg2ImgBody({ prompt: 'p' }, 'X');
+test('buildImg2ImgBody: no mask -> plain img2img body, schema fallbacks', () => {
+  const body = core.buildImg2ImgBody({ prompt: 'p', denoise: 0.5 }, 'X');
   assert.equal(body.mask, undefined);
   assert.equal(body.inpaint_full_res, undefined);
   assert.equal(body.denoising_strength, 0.5);
-  assert.equal(body.steps, 25);
+  assert.equal(body.steps, 50);            // schema default (openapi.json f2.0.1)
+  assert.equal(body.sampler_name, undefined);   // not chosen -> omitted
+});
+
+test('buildTxt2ImgBody: untouched fields are omitted, changed ones sent', () => {
+  const body = core.buildTxt2ImgBody({
+    prompt: 'p', steps: 25, cfg: 7, width: 1024, height: 1024, sampler: 'DPM++ 2M',
+    scheduler: 'karras', batch_size: 1, n_iter: 1,          // batch/n_iter = defaults
+    subseed: -1, subseed_strength: 0,                        // defaults
+    eta: 0.2, s_churn: 0.5, tiling: true                     // user-touched
+  });
+  assert.equal(body.scheduler, 'karras');
+  assert.equal(body.batch_size, undefined);
+  assert.equal(body.n_iter, undefined);
+  assert.equal(body.subseed, undefined);
+  assert.equal(body.subseed_strength, undefined);
+  assert.equal(body.eta, 0.2);
+  assert.equal(body.s_churn, 0.5);
+  assert.equal(body.tiling, true);
+  assert.equal(body.enable_hr, undefined);
+  assert.equal(body.override_settings, undefined);
+});
+
+test('buildTxt2ImgBody: hires block only when enable_hr', () => {
+  const off = core.buildTxt2ImgBody({ prompt: 'p', hr_scale: 2.5 });
+  assert.equal(off.enable_hr, undefined);
+  assert.equal(off.hr_scale, undefined);
+  const on = core.buildTxt2ImgBody({
+    prompt: 'p', enable_hr: true, hr_scale: 2.5, hr_upscaler: 'Lanczos',
+    hr_second_pass_steps: 0, hr_cfg: 1                       // defaults -> omitted
+  });
+  assert.equal(on.enable_hr, true);
+  assert.equal(on.hr_scale, 2.5);
+  assert.equal(on.hr_upscaler, 'Lanczos');
+  assert.equal(on.hr_second_pass_steps, undefined);
+  assert.equal(on.hr_cfg, undefined);
+  // Forge f2.0.1 500s on the schema default (null) — UI default must be sent
+  assert.deepEqual(on.hr_additional_modules, ['Use same choices']);
+});
+
+test('buildTxt2ImgBody: refiner + override_settings with restore flag', () => {
+  const body = core.buildTxt2ImgBody({
+    prompt: 'p', refiner_checkpoint: 'sdxl_refiner.safetensors', refiner_switch_at: 0.8,
+    override_settings: { CLIP_stop_at_last_layers: 2, sd_vae: 'kl-f8.safetensors' }
+  });
+  assert.equal(body.refiner_checkpoint, 'sdxl_refiner.safetensors');
+  assert.equal(body.refiner_switch_at, 0.8);
+  assert.deepEqual(body.override_settings, { CLIP_stop_at_last_layers: 2, sd_vae: 'kl-f8.safetensors' });
+  assert.equal(body.override_settings_restore_afterwards, true);
+  const none = core.buildTxt2ImgBody({ prompt: 'p', override_settings: {} });
+  assert.equal(none.override_settings, undefined);
+});
+
+test('buildTxt2ImgBody: styles array sent only when non-empty', () => {
+  assert.deepEqual(core.buildTxt2ImgBody({ prompt: 'p', styles: ['cinematic'] }).styles, ['cinematic']);
+  assert.equal(core.buildTxt2ImgBody({ prompt: 'p', styles: [] }).styles, undefined);
 });

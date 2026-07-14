@@ -302,12 +302,16 @@ export default function App() {
   // drag and drop files onto the window
   useEffect(() => {
     let dragDepth = 0;
+    const hasFiles = (e) => e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files');
+    // Overlay bookkeeping listens in the CAPTURE phase: the SD source box and
+    // the terminal dock stopPropagation() on drag/drop to claim the payload for
+    // themselves, which starves bubble-phase listeners and left the overlay
+    // stuck. Only the attach-to-chat drop handler stays in bubble phase, so a
+    // child that claims a drop still keeps it out of the chat attach bar.
     const enter = (e) => {
       e.preventDefault();
       if (stateRef.current.view === 'terminal') return;
-      if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')) {
-        dragDepth++; setDropShow(true);
-      }
+      if (hasFiles(e)) { dragDepth++; setDropShow(true); }
     };
     const over = (e) => {
       if (stateRef.current.view === 'terminal') return;
@@ -316,13 +320,16 @@ export default function App() {
     const leave = (e) => {
       e.preventDefault();
       if (stateRef.current.view === 'terminal') return;
-      dragDepth = Math.max(0, dragDepth - 1);
+      // relatedTarget null = the cursor left the window; hide unconditionally
+      // (fast exits can skip intermediate dragleaves and strand the counter)
+      dragDepth = e.relatedTarget === null ? 0 : Math.max(0, dragDepth - 1);
       if (dragDepth === 0) setDropShow(false);
     };
+    const reset = () => { dragDepth = 0; setDropShow(false); };
+    const dropHide = (e) => { e.preventDefault(); reset(); };
     const drop = async (e) => {
       e.preventDefault();
       if (stateRef.current.view === 'terminal') return;
-      dragDepth = 0; setDropShow(false);
       const dropped = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
       if (!dropped.length) return;
       // Electron 32+ removed File.path; webUtils.getPathForFile is the supported way.
@@ -344,14 +351,18 @@ export default function App() {
         }
       }
     };
-    window.addEventListener('dragenter', enter);
+    window.addEventListener('dragenter', enter, true);
+    window.addEventListener('dragleave', leave, true);
+    window.addEventListener('drop', dropHide, true);
+    window.addEventListener('dragend', reset, true);
     window.addEventListener('dragover', over);
-    window.addEventListener('dragleave', leave);
     window.addEventListener('drop', drop);
     return () => {
-      window.removeEventListener('dragenter', enter);
+      window.removeEventListener('dragenter', enter, true);
+      window.removeEventListener('dragleave', leave, true);
+      window.removeEventListener('drop', dropHide, true);
+      window.removeEventListener('dragend', reset, true);
       window.removeEventListener('dragover', over);
-      window.removeEventListener('dragleave', leave);
       window.removeEventListener('drop', drop);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

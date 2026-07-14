@@ -76,3 +76,90 @@ export function snapDim(n, min = 64, max = 2048) {
   const v = Math.max(min, Math.min(max, Math.round(Number(n) || 0)));
   return v - (v % 8);
 }
+
+// clamp a numeric control to its sd-schema.json range
+export function clampParam(v, meta) {
+  let n = Number(v);
+  if (!Number.isFinite(n)) n = meta.def != null ? meta.def : 0;
+  if (meta.min != null) n = Math.max(meta.min, n);
+  if (meta.max != null) n = Math.min(meta.max, n);
+  if (meta.step != null && meta.step >= 1) n = Math.round(n / meta.step) * meta.step;
+  return n;
+}
+
+// ---------- PNG-info (A1111 infotext) parser ----------
+// /sdapi/v1/png-info returns the `parameters` text embedded in a generated
+// PNG:  <prompt>\n[Negative prompt: <neg>]\nSteps: 25, Sampler: DPM++ 2M, ...
+// This maps that back onto our schema field names so every control can be
+// repopulated. Unrecognised keys are preserved in `raw` (never sent to Forge).
+const INFOTEXT_KEYS = {
+  'Steps': ['steps', 'int'],
+  'Sampler': ['sampler_name', 'str'],
+  'Schedule type': ['scheduler', 'str'],
+  'CFG scale': ['cfg_scale', 'num'],
+  'Distilled CFG Scale': ['distilled_cfg_scale', 'num'],
+  'Image CFG scale': ['image_cfg_scale', 'num'],
+  'Seed': ['seed', 'int'],
+  'Size': ['__size', 'wxh'],
+  'VAE': ['sd_vae', 'str'],
+  'Clip skip': ['CLIP_stop_at_last_layers', 'int'],
+  'Denoising strength': ['denoising_strength', 'num'],
+  'Variation seed': ['subseed', 'int'],
+  'Variation seed strength': ['subseed_strength', 'num'],
+  'Seed resize from': ['__seed_resize', 'wxh'],
+  'Hires upscale': ['hr_scale', 'num'],
+  'Hires steps': ['hr_second_pass_steps', 'int'],
+  'Hires upscaler': ['hr_upscaler', 'str'],
+  'Hires resize': ['__hr_resize', 'wxh'],
+  'Hires CFG Scale': ['hr_cfg', 'num'],
+  'Refiner': ['refiner_checkpoint', 'model'],
+  'Refiner switch at': ['refiner_switch_at', 'num'],
+  'Eta': ['eta', 'num'],
+  'Mask blur': ['mask_blur', 'int'],
+  'Masked area padding': ['inpaint_full_res_padding', 'int'],
+  'Noise multiplier': ['initial_noise_multiplier', 'num'],
+  'Batch size': ['batch_size', 'int'],
+  'Tiling': ['tiling', 'bool'],
+  'Face restoration': ['restore_faces', 'bool']
+};
+
+export function parseInfotext(text) {
+  const t = String(text || '').replace(/\r/g, '').trim();
+  if (!t) return null;
+  const lines = t.split('\n');
+  let paramLine = '';
+  if (lines.length > 0 && /(^|, )Steps: \d/.test(lines[lines.length - 1])) paramLine = lines.pop();
+  let negStart = lines.findIndex(l => l.startsWith('Negative prompt: '));
+  const prompt = (negStart === -1 ? lines : lines.slice(0, negStart)).join('\n').trim();
+  const negative = negStart === -1 ? ''
+    : [lines[negStart].slice('Negative prompt: '.length), ...lines.slice(negStart + 1)].join('\n').trim();
+  if (!paramLine && !prompt) return null;
+
+  const params = {}, raw = {};
+  let model = '';
+  const re = /\s*([^:,]+):\s*("(?:\\.|[^\\"])*"|[^,]*)(?:,|$)/g;
+  let m;
+  while ((m = re.exec(paramLine)) !== null) {
+    const key = m[1].trim();
+    let val = m[2].trim();
+    if (val.startsWith('"') && val.endsWith('"')) val = val.slice(1, -1).replace(/\\(.)/g, '$1');
+    raw[key] = val;
+    if (key === 'Model') { model = val; continue; }
+    const spec = INFOTEXT_KEYS[key];
+    if (!spec) continue;
+    const [field, kind] = spec;
+    if (kind === 'wxh') {
+      const mm = val.match(/^(\d+)\s*x\s*(\d+)$/i);
+      if (!mm) continue;
+      if (field === '__size') { params.width = Number(mm[1]); params.height = Number(mm[2]); }
+      else if (field === '__hr_resize') { params.hr_resize_x = Number(mm[1]); params.hr_resize_y = Number(mm[2]); }
+      else { params.seed_resize_from_w = Number(mm[1]); params.seed_resize_from_h = Number(mm[2]); }
+    } else if (kind === 'int') { const n = parseInt(val, 10); if (Number.isFinite(n)) params[field] = n; }
+    else if (kind === 'num') { const n = parseFloat(val); if (Number.isFinite(n)) params[field] = n; }
+    else if (kind === 'bool') { params[field] = val !== 'None' && val !== 'false'; }
+    else if (kind === 'model') { params[field] = val.replace(/\s*\[[0-9a-f]+\]$/i, ''); }
+    else if (val) params[field] = val;
+  }
+  if (params.hr_scale != null || params.hr_upscaler || params.hr_resize_x != null) params.enable_hr = true;
+  return { prompt, negative, params, model, raw };
+}

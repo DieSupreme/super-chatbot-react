@@ -44,25 +44,32 @@ describe('SdPanel', () => {
     expect(screen.getByRole('option', { name: /realvis \(on disk\)/ })).toBeInTheDocument();
   });
 
-  it('mounts with a mocked /sd-models + /samplers response when running', async () => {
+  it('populates every dropdown from the consolidated sd:lists call when running', async () => {
     mock.api.sd.status = async () => ({ ok: true, status: 'running', url: 'http://127.0.0.1:7860', managed: false, log: [] });
-    mock.api.sd.models = async () => ({
+    mock.api.sd.lists = async () => ({
       ok: true,
-      data: [{ title: 'juggernautXL_ragnarok.safetensors [aabbcc]', model_name: 'juggernautXL_ragnarok', filename: 'D:\\x\\juggernautXL_ragnarok.safetensors' }]
+      samplers: [{ name: 'Euler a' }, { name: 'DPM++ 2M Karras' }],
+      schedulers: [{ name: 'automatic', label: 'Automatic' }, { name: 'karras', label: 'Karras' }],
+      upscalers: [{ name: 'Lanczos' }],
+      latentUpscaleModes: [{ name: 'Latent' }],
+      models: [{ title: 'juggernautXL_ragnarok.safetensors [aabbcc]', model_name: 'juggernautXL_ragnarok', filename: 'D:\\x\\juggernautXL_ragnarok.safetensors' }],
+      styles: [{ name: 'cinematic' }]
     });
-    mock.api.sd.samplers = async () => ({ ok: true, data: [{ name: 'Euler a' }, { name: 'DPM++ 2M Karras' }] });
-    mock.api.sd.getOptions = async () => ({ ok: true, checkpoint: 'juggernautXL_ragnarok.safetensors [aabbcc]' });
+    mock.api.sd.getOptions = async () => ({ ok: true, checkpoint: 'juggernautXL_ragnarok.safetensors [aabbcc]', vae: 'Automatic', clipSkip: 1 });
 
     render(<SdPanel open onToast={noop} onImage={noop} convoImages={[]} />);
     await waitFor(() => {
-      expect(screen.getByRole('option', { name: 'juggernautXL_ragnarok' })).toBeInTheDocument();
+      // checkpoint shows up in the Basic + Refiner selects (Hires fields render only when enabled)
+      expect(screen.getAllByRole('option', { name: 'juggernautXL_ragnarok' }).length).toBeGreaterThanOrEqual(2);
     });
-    expect(screen.getByRole('option', { name: 'DPM++ 2M Karras' })).toBeInTheDocument();
+    expect(screen.getAllByRole('option', { name: 'DPM++ 2M Karras' }).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByRole('option', { name: 'Karras' }).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByRole('option', { name: 'cinematic' })).toBeInTheDocument();
     expect(screen.queryByText(/Forge not running/)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Generate' })).toBeEnabled();
   });
 
-  it('generates: sends the form payload and reports the saved file upward', async () => {
+  it('generates: opens on the shipped preset, untouched sections stay omitted', async () => {
     mock.api.sd.status = async () => ({ ok: true, status: 'running', url: 'http://127.0.0.1:7860', managed: false, log: [] });
     const got = [];
     render(<SdPanel open onToast={noop} onImage={(r) => got.push(r)} convoImages={[]} />);
@@ -75,7 +82,57 @@ describe('SdPanel', () => {
     expect(got[0].path).toMatch(/sd-1\.png$/);
     expect(got[0].seed).toBe(42);
     const call = mock.calls.find(c => c[0] === 'sd:txt2img');
-    expect(call[1]).toMatchObject({ prompt: 'a red fox', steps: 25, cfg: 7, width: 1024, height: 1024, seed: -1 });
+    // first open = the shipped Default (DPM++ 2M Karras) preset, auto-applied
+    expect(call[1]).toMatchObject({
+      prompt: 'a red fox', steps: 25, cfg: 7, width: 1024, height: 1024, seed: -1,
+      sampler: 'DPM++ 2M', scheduler: 'karras'
+    });
+    expect(call[1].enable_hr).toBeUndefined();     // untouched sections stay omitted
+    expect(call[1].override_settings).toBeUndefined();
+  });
+
+  it('parameter sections are collapsed by default and toggle open', async () => {
+    mock.api.sd.status = async () => ({ ok: true, status: 'running', url: 'http://127.0.0.1:7860', managed: false, log: [] });
+    const { container } = render(<SdPanel open onToast={noop} onImage={noop} convoImages={[]} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Generate' })).toBeEnabled());
+    const secs = container.querySelectorAll('details.sd-sec');
+    expect(secs.length).toBeGreaterThanOrEqual(4);  // Seed, Hires, Refiner, Advanced, Overrides
+    for (const s of secs) expect(s.open).toBe(false);
+    fireEvent.click(screen.getByText('Advanced'));
+    await waitFor(() => expect(screen.getByText('Restore faces')).toBeVisible());
+    expect(screen.getByText('CLIP skip')).toBeInTheDocument();   // Overrides section rendered
+  });
+
+  it('applying the shipped preset changes the outgoing payload', async () => {
+    mock.api.sd.status = async () => ({ ok: true, status: 'running', url: 'http://127.0.0.1:7860', managed: false, log: [] });
+    const { container } = render(<SdPanel open onToast={noop} onImage={noop} convoImages={[]} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Generate' })).toBeEnabled());
+    fireEvent.change(container.querySelector('.sd-preset-row select'), { target: { value: 'Default (DPM++ 2M Karras)' } });
+    fireEvent.change(screen.getByPlaceholderText(/what to generate/), { target: { value: 'x' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Generate' }));
+    await waitFor(() => expect(mock.calls.some(c => c[0] === 'sd:txt2img')).toBe(true));
+    const call = mock.calls.find(c => c[0] === 'sd:txt2img');
+    expect(call[1]).toMatchObject({ steps: 25, cfg: 7, width: 1024, height: 1024, sampler: 'DPM++ 2M', scheduler: 'karras' });
+  });
+
+  it('dropping a Forge PNG on the panel imports its parameters into the controls', async () => {
+    mock.api.sd.status = async () => ({ ok: true, status: 'running', url: 'http://127.0.0.1:7860', managed: false, log: [] });
+    mock.api.sd.pngInfo = async () => ({
+      ok: true,
+      info: 'a fox on a hill\nNegative prompt: blurry\nSteps: 30, Sampler: DPM++ 2M, Schedule type: Karras, CFG scale: 5.5, Seed: 77, Size: 768x512, Clip skip: 2',
+      items: {}
+    });
+    const { container } = render(<SdPanel open onToast={noop} onImage={noop} convoImages={[]} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Generate' })).toBeEnabled());
+    const png = new File([Uint8Array.from([137, 80, 78, 71])], 'gen.png', { type: 'image/png' });
+    fireEvent.drop(container.querySelector('.sd-panel'), { dataTransfer: { files: [png], types: ['Files'] } });
+    await waitFor(() => expect(screen.getByPlaceholderText(/what to generate/).value).toBe('a fox on a hill'));
+    expect(screen.getByPlaceholderText(/what to avoid/).value).toBe('blurry');
+    fireEvent.click(screen.getByRole('button', { name: 'Generate' }));
+    await waitFor(() => expect(mock.calls.some(c => c[0] === 'sd:txt2img')).toBe(true));
+    const call = mock.calls.find(c => c[0] === 'sd:txt2img');
+    expect(call[1]).toMatchObject({ steps: 30, cfg: 5.5, width: 768, height: 512, seed: 77, sampler: 'DPM++ 2M', scheduler: 'karras' });
+    expect(call[1].override_settings).toMatchObject({ CLIP_stop_at_last_layers: 2 });
   });
 
   it('surfaces a Forge error string without blanking the panel', async () => {

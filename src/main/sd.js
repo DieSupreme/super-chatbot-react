@@ -56,6 +56,7 @@ function registerSdIpc(app, getWin) {
 
   function setStatus(next, message) {
     if (status === next && !message) return;
+    if (next === 'running' && status !== 'running') listsCache = null;   // fresh Forge, fresh lists
     status = next;
     send('sd:status', { status, url: baseUrl(), managed: !!proc, ...(message ? { message } : {}) });
   }
@@ -96,7 +97,7 @@ function registerSdIpc(app, getWin) {
     try {
       proc = core.spawnForge(root);
     } catch (err) { proc = null; return { ok: false, error: err.message }; }
-    pushLog(`[app] launching Forge from ${root} (COMMANDLINE_ARGS=${core.FORGE_ARGS})`);
+    pushLog(`[app] spawn: ${proc.spawnargs.join(' ')} (cwd=${root}, COMMANDLINE_ARGS=${core.FORGE_ARGS}, SD_WEBUI_RESTARTING=1)`);
     setStatus('starting');
 
     let buf = { out: '', err: '' };
@@ -157,9 +158,63 @@ function registerSdIpc(app, getWin) {
   // ---------- model / sampler lists ----------
   ipcMain.handle('sd:models', () => getJson('/sdapi/v1/sd-models'));
   ipcMain.handle('sd:samplers', () => getJson('/sdapi/v1/samplers'));
+
+  // Dropdown sources, one round trip for the renderer. Cached until Forge
+  // (re)starts or sd:refresh clears it. /sdapi/v1/sd-vae and /loras are 404 in
+  // Forge f2.0.1 — VAE/LoRA pickers come from disk scans instead (sd:scanVae /
+  // sd:scanLoras), so they are deliberately absent here.
+  let listsCache = null;
+  const LIST_ROUTES = {
+    samplers: '/sdapi/v1/samplers',
+    schedulers: '/sdapi/v1/schedulers',
+    upscalers: '/sdapi/v1/upscalers',
+    latentUpscaleModes: '/sdapi/v1/latent-upscale-modes',
+    models: '/sdapi/v1/sd-models',
+    styles: '/sdapi/v1/prompt-styles'
+  };
+  ipcMain.handle('sd:lists', async (_e, force) => {
+    if (listsCache && !force) return listsCache;
+    const keys = Object.keys(LIST_ROUTES);
+    const results = await Promise.all(keys.map(k => getJson(LIST_ROUTES[k])));
+    if (results.every(r => !r.ok)) return results[0];   // Forge down -> one offline error
+    const out = { ok: true };
+    keys.forEach((k, i) => { out[k] = results[i].ok ? results[i].data : []; });
+    listsCache = out;
+    return out;
+  });
+
+  // POST refresh-* so models added on disk appear without a Forge restart,
+  // then drop the cache. refresh-vae/-loras may not exist in every build —
+  // best effort, never an error.
+  ipcMain.handle('sd:refreshLists', async () => {
+    for (const route of ['/sdapi/v1/refresh-checkpoints', '/sdapi/v1/refresh-vae', '/sdapi/v1/refresh-loras']) {
+      try { await sdFetch(route, { method: 'POST', body: {}, timeoutMs: 30000 }); } catch (_) {}
+    }
+    listsCache = null;
+    return { ok: true };
+  });
+
   ipcMain.handle('sd:getOptions', async () => {
     const r = await getJson('/sdapi/v1/options');
-    return r.ok ? { ok: true, checkpoint: r.data.sd_model_checkpoint || '' } : r;
+    if (!r.ok) return r;
+    return {
+      ok: true,
+      checkpoint: r.data.sd_model_checkpoint || '',
+      vae: r.data.sd_vae,
+      clipSkip: r.data.CLIP_stop_at_last_layers
+    };
+  });
+
+  // PNG-info: recover the generation parameters embedded in a Forge PNG
+  ipcMain.handle('sd:pngInfo', async (_e, b64) => {
+    try {
+      const res = await sdFetch('/sdapi/v1/png-info', {
+        method: 'POST', body: { image: 'data:image/png;base64,' + String(b64 || '') }, timeoutMs: 30000
+      });
+      if (!res.ok) return { ok: false, status: res.status, error: apiErrorText((await res.text()).slice(0, 800)).slice(0, 500) };
+      const data = await res.json();
+      return { ok: true, info: data.info || '', items: data.items || {} };
+    } catch (err) { return offline(err); }
   });
   ipcMain.handle('sd:setModel', async (_e, title) => {
     try {
@@ -180,6 +235,11 @@ function registerSdIpc(app, getWin) {
   ipcMain.handle('sd:scanLoras', () => {
     const layout = core.detectLayout(readSettings().sdForgePath);
     try { return { ok: true, list: core.scanLoras(layout.base) }; }
+    catch (err) { return { ok: false, error: err.message }; }
+  });
+  ipcMain.handle('sd:scanVae', () => {
+    const layout = core.detectLayout(readSettings().sdForgePath);
+    try { return { ok: true, list: core.scanVae(layout.base) }; }
     catch (err) { return { ok: false, error: err.message }; }
   });
 
@@ -215,7 +275,26 @@ function registerSdIpc(app, getWin) {
   async function runJob(route, body) {
     if (jobActive) return { ok: false, error: 'a generation is already running' };
     jobActive = true;
-    console.log('[sd] POST ' + route, JSON.stringify(sanitizeBody(body)));
+    // Forge restore bug workaround (processing.py:820): stored_opts only keeps
+    // override keys already present in opts.data, so an option still at its
+    // default is skipped by the restore and the override sticks permanently.
+    // POSTing the current values first puts the keys into opts.data, which
+    // arms Forge's own override_settings_restore_afterwards path.
+    if (body.override_settings) {
+      try {
+        const cur = await sdFetch('/sdapi/v1/options', { timeoutMs: 10000 });
+        if (cur.ok) {
+          const opts = await cur.json();
+          const preSeed = {};
+          for (const k of Object.keys(body.override_settings)) if (k in opts) preSeed[k] = opts[k];
+          if (Object.keys(preSeed).length) {
+            await sdFetch('/sdapi/v1/options', { method: 'POST', body: preSeed, timeoutMs: 30000 });
+          }
+        }
+      } catch (_) {}
+    }
+    // the resolved request body, visible in the panel's Forge log (minus pixels)
+    pushLog('[app] POST ' + route + ' ' + JSON.stringify(sanitizeBody(body)));
     // progress: main polls, renderer just listens to sd:progress events
     const poll = setInterval(async () => {
       try {

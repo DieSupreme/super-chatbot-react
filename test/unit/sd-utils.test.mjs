@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import {
   createMask, stampCircle, stampLine, maskHasInk, maskToOverlayRgba,
-  reconcileCheckpoints, loraTag, snapDim
+  reconcileCheckpoints, loraTag, snapDim, clampParam, parseInfotext
 } from '../../src/sd-utils.js';
 
 test('mask: stamp / ink / overlay', () => {
@@ -47,4 +47,66 @@ test('snapDim clamps and rounds to multiples of 8', () => {
   assert.equal(snapDim(1024), 1024);
   assert.equal(snapDim(10), 64);
   assert.equal(snapDim(99999), 2048);
+});
+
+test('parseInfotext: full Forge parameter line round-trips to schema fields', () => {
+  const info = [
+    'a red fox, detailed fur',
+    'second prompt line',
+    'Negative prompt: blurry, low quality',
+    'Steps: 25, Sampler: DPM++ 2M, Schedule type: Karras, CFG scale: 7.5, Seed: 42, ' +
+    'Size: 1024x768, Model hash: 0da7a319, Model: juggernautXL_ragnarok, VAE: kl-f8.safetensors, ' +
+    'Denoising strength: 0.7, Clip skip: 2, Hires upscale: 2.5, Hires steps: 10, Hires upscaler: Lanczos, ' +
+    'Variation seed: 99, Variation seed strength: 0.3, Refiner: sdxl_refiner [1f2e3d4c], ' +
+    'Refiner switch at: 0.8, Distilled CFG Scale: 3.5, Version: f2.0.1'
+  ].join('\n');
+  const r = parseInfotext(info);
+  assert.equal(r.prompt, 'a red fox, detailed fur\nsecond prompt line');
+  assert.equal(r.negative, 'blurry, low quality');
+  assert.equal(r.model, 'juggernautXL_ragnarok');
+  assert.equal(r.params.steps, 25);
+  assert.equal(r.params.sampler_name, 'DPM++ 2M');
+  assert.equal(r.params.scheduler, 'Karras');
+  assert.equal(r.params.cfg_scale, 7.5);
+  assert.equal(r.params.seed, 42);
+  assert.equal(r.params.width, 1024);
+  assert.equal(r.params.height, 768);
+  assert.equal(r.params.sd_vae, 'kl-f8.safetensors');
+  assert.equal(r.params.CLIP_stop_at_last_layers, 2);
+  assert.equal(r.params.denoising_strength, 0.7);
+  assert.equal(r.params.enable_hr, true);
+  assert.equal(r.params.hr_scale, 2.5);
+  assert.equal(r.params.hr_second_pass_steps, 10);
+  assert.equal(r.params.hr_upscaler, 'Lanczos');
+  assert.equal(r.params.subseed, 99);
+  assert.equal(r.params.subseed_strength, 0.3);
+  assert.equal(r.params.refiner_checkpoint, 'sdxl_refiner');
+  assert.equal(r.params.refiner_switch_at, 0.8);
+  assert.equal(r.params.distilled_cfg_scale, 3.5);
+  assert.equal(r.raw['Version'], 'f2.0.1');
+});
+
+test('parseInfotext: no negative, no hires, quoted value with commas', () => {
+  const r = parseInfotext('a cat\nSteps: 20, Sampler: Euler a, CFG scale: 7, Seed: 1, Size: 512x512, Lora hashes: "a: b, c: d"');
+  assert.equal(r.prompt, 'a cat');
+  assert.equal(r.negative, '');
+  assert.equal(r.params.enable_hr, undefined);
+  assert.equal(r.params.sampler_name, 'Euler a');
+  assert.equal(r.raw['Lora hashes'], 'a: b, c: d');
+});
+
+test('parseInfotext: garbage and empty input', () => {
+  assert.equal(parseInfotext(''), null);
+  assert.equal(parseInfotext(null), null);
+  const r = parseInfotext('just a prompt with no params');
+  assert.equal(r.prompt, 'just a prompt with no params');
+  assert.deepEqual(r.params, {});
+});
+
+test('clampParam: enforces schema min/max/step', () => {
+  assert.equal(clampParam(500, { def: 50, min: 1, max: 150, step: 1 }), 150);
+  assert.equal(clampParam(-5, { def: 50, min: 1, max: 150, step: 1 }), 1);
+  assert.equal(clampParam(7.4, { def: 50, min: 1, max: 150, step: 1 }), 7);
+  assert.equal(clampParam(0.37, { def: 0, min: 0, max: 1, step: 0.01 }), 0.37);
+  assert.equal(clampParam('abc', { def: 50, min: 1, max: 150, step: 1 }), 50);
 });

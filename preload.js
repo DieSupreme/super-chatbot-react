@@ -70,10 +70,14 @@ contextBridge.exposeInMainWorld('api', {
     interrupt: () => ipcRenderer.invoke('sd:interrupt'),
     models: () => ipcRenderer.invoke('sd:models'),
     samplers: () => ipcRenderer.invoke('sd:samplers'),
+    lists: (force) => ipcRenderer.invoke('sd:lists', force),
+    refreshLists: () => ipcRenderer.invoke('sd:refreshLists'),
+    pngInfo: (b64) => ipcRenderer.invoke('sd:pngInfo', b64),
     getOptions: () => ipcRenderer.invoke('sd:getOptions'),
     setModel: (title) => ipcRenderer.invoke('sd:setModel', title),
     scanCheckpoints: () => ipcRenderer.invoke('sd:scanCheckpoints'),
     scanLoras: () => ipcRenderer.invoke('sd:scanLoras'),
+    scanVae: () => ipcRenderer.invoke('sd:scanVae'),
     readImage: (p) => ipcRenderer.invoke('sd:readImage', p),
     onProgress: (cb) => {
       const h = (_e, d) => cb(d);
