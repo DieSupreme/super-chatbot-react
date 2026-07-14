@@ -16,5 +16,12 @@ export function toPersistedMessage(m) {
   if (m.citations?.length) out.citations = m.citations;
   // local SD images live on disk — persist only the path, never the pixels
   if (m.imagePath) out.imagePath = m.imagePath;
+  // message discriminator: 'image' = SD generation; absent = chat (old files)
+  if (m.kind && m.kind !== 'chat') out.kind = m.kind;
+  if (m.genParams) {
+    // full generation params for replay — minus in-memory pixel buffers
+    const { initB64, maskData, ...gp } = m.genParams;
+    out.genParams = gp;
+  }
   return out;
 }

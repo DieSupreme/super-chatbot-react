@@ -100,6 +100,37 @@ function spawnForge(root) {
   return spawn('bash', ['webui.sh'], { cwd: layout.base, env, stdio: ['ignore', 'pipe', 'pipe'] });
 }
 
+// ---------- request-body sanitizer ----------
+// Forge's pydantic models accept Optional numerics, then processing does
+// arithmetic on them: a null steps/cfg_scale/width/batch_size/n_iter/
+// subseed_strength/hr_* all 500 with a NoneType TypeError (verified live,
+// only seed tolerates null). An empty <input type="number"> yields "" in the
+// renderer, which would serialize to null — so the LAST step before the fetch
+// scrubs the whole body, schema-driven, no field special-cased: null-ish
+// values become the field's schema default, or the key is dropped when the
+// schema default is itself null.
+function sanitizeRequestBody(body) {
+  const FIELDS = { ...SD_SCHEMA.txt2img, ...SD_SCHEMA.img2img };
+  const bad = (v) => v === null || v === undefined || v === ''
+    || (typeof v === 'number' && !Number.isFinite(v));
+  const out = {};
+  for (const [k, v] of Object.entries(body)) {
+    if (bad(v)) {
+      const meta = FIELDS[k];
+      if (meta && meta.def !== null && meta.def !== undefined) out[k] = meta.def;
+      continue;   // no usable default -> omit the key entirely
+    }
+    if (k === 'override_settings' && typeof v === 'object' && !Array.isArray(v)) {
+      const o = {};
+      for (const [ok, ov] of Object.entries(v)) if (!bad(ov)) o[ok] = ov;
+      if (Object.keys(o).length) out[k] = o;
+      continue;
+    }
+    out[k] = v;
+  }
+  return out;
+}
+
 // Kill the whole tree: the .bat is only a cmd wrapper — a plain kill would
 // orphan the python child holding port 7860, so on Windows use taskkill /T.
 function killTree(pid) {
@@ -246,6 +277,13 @@ function buildTxt2ImgBody(p) {
     // caller picked modules explicitly.
     body.hr_additional_modules = Array.isArray(p.hr_additional_modules) ? p.hr_additional_modules : ['Use same choices'];
     applySchemaFields(body, p, SD_SCHEMA.txt2img, new Set([...SD_SCHEMA_NON_HR, 'enable_hr', 'hr_additional_modules']));
+    // hires REQUIRES a denoising strength: the API default is None and Forge
+    // crashes on "'>' not supported between NoneType and int" (verified live).
+    // 0.7 is the Forge UI's own default for the hires denoise control.
+    if (body.denoising_strength == null) {
+      const d = Number(p.denoising_strength != null ? p.denoising_strength : p.denoise);
+      body.denoising_strength = Number.isFinite(d) ? d : 0.7;
+    }
   }
   if (p.refiner_checkpoint) {
     body.refiner_checkpoint = p.refiner_checkpoint;
@@ -316,5 +354,5 @@ function imageFileName(dir, seed, now = new Date()) {
 module.exports = {
   detectLayout, scanCheckpoints, scanLoras, scanVae, reconcileCheckpoints,
   FORGE_ARGS, forgeSpawnEnv, spawnForge, killTree, portInUse, waitPortFree,
-  encodeMaskPng, scaleMask, buildTxt2ImgBody, buildImg2ImgBody, imageFileName
+  encodeMaskPng, scaleMask, buildTxt2ImgBody, buildImg2ImgBody, sanitizeRequestBody, imageFileName
 };

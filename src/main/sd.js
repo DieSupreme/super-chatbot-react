@@ -284,6 +284,8 @@ function registerSdIpc(app, getWin) {
   async function runJob(route, body) {
     if (jobActive) return { ok: false, error: 'a generation is already running' };
     jobActive = true;
+    // never let a null/""/NaN reach Forge — schema-driven scrub (see sd-core)
+    body = core.sanitizeRequestBody(body);
     // Forge restore bug workaround (processing.py:820): stored_opts only keeps
     // override keys already present in opts.data, so an option still at its
     // default is skipped by the restore and the override sticks permanently.

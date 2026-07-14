@@ -215,6 +215,41 @@ test('buildImg2ImgBody: ADetailer flows through from the shared builder', () => 
   assert.deepEqual(body.alwayson_scripts.ADetailer.args, [true, false, { ad_model: 'hand_yolov8n.pt', ad_confidence: 0.5 }]);
 });
 
+test('sanitizeRequestBody: null-ish numerics become schema defaults or vanish', () => {
+  const out = core.sanitizeRequestBody({
+    prompt: 'p',
+    steps: null,                    // schema default 50
+    cfg_scale: undefined,           // schema default 7
+    width: '',                      // schema default 512
+    batch_size: NaN,                // schema default 1
+    eta: null,                      // schema default null -> key dropped
+    denoising_strength: null,       // img2img schema default 0.75 substitutes
+    subseed_strength: null,         // schema default 0
+    sampler_name: 'DPM++ 2M',       // untouched
+    seed: -1,                       // untouched (valid value)
+    override_settings: { CLIP_stop_at_last_layers: null, sd_vae: 'Automatic' }
+  });
+  assert.equal(out.steps, 50);
+  assert.equal(out.cfg_scale, 7);
+  assert.equal(out.width, 512);
+  assert.equal(out.batch_size, 1);
+  assert.equal('eta' in out, false);
+  assert.equal(out.denoising_strength, 0.75);
+  assert.equal(out.subseed_strength, 0);
+  assert.equal(out.sampler_name, 'DPM++ 2M');
+  assert.equal(out.seed, -1);
+  assert.deepEqual(out.override_settings, { sd_vae: 'Automatic' });   // null entry scrubbed
+});
+
+test('buildTxt2ImgBody: hires always carries a denoising strength', () => {
+  const noD = core.buildTxt2ImgBody({ prompt: 'p', enable_hr: true, hr_scale: 2 });
+  assert.equal(noD.denoising_strength, 0.7);        // Forge UI default; None crashes Forge
+  const withD = core.buildTxt2ImgBody({ prompt: 'p', enable_hr: true, denoising_strength: 0.55 });
+  assert.equal(withD.denoising_strength, 0.55);
+  const legacy = core.buildTxt2ImgBody({ prompt: 'p', enable_hr: true, denoise: 0.6 });
+  assert.equal(legacy.denoising_strength, 0.6);
+});
+
 test('buildTxt2ImgBody: styles array sent only when non-empty', () => {
   assert.deepEqual(core.buildTxt2ImgBody({ prompt: 'p', styles: ['cinematic'] }).styles, ['cinematic']);
   assert.equal(core.buildTxt2ImgBody({ prompt: 'p', styles: [] }).styles, undefined);

@@ -221,6 +221,10 @@ export default function App() {
       reasoning: m.reasoning,
       citations: m.citations,
       imagePath: m.imagePath,
+      // discriminator with backwards compat: files written before `kind`
+      // existed mark SD results only by imagePath; plain messages are chat
+      kind: m.kind || (m.imagePath ? 'image' : 'chat'),
+      genParams: m.genParams,
       thinkOpen: m.reasoning ? false : undefined
     })));
     refreshConvos();
@@ -566,10 +570,10 @@ export default function App() {
   }
 
   // ================= local SD results =================
-  // The panel hands back {path, prompt, seed}; the image lives on disk and the
-  // chat message carries only the path — SdImage in ChatLog loads pixels via
-  // IPC on mount, so no big base64 sits in React state.
-  async function appendSdImage({ path, prompt, seed }) {
+  // The panel hands back {path, prompt, seed, genParams}; the image lives on
+  // disk and the message carries the path plus the FULL generation params
+  // (kind:'image' discriminates it from chat for Regenerate routing).
+  async function appendSdImage({ path, prompt, seed, genParams }) {
     if (!messagesRef.current.length) {
       const t = '🎨 ' + prompt.slice(0, 38);
       setCurrentTitle(t);
@@ -578,9 +582,31 @@ export default function App() {
     setMessages([...messagesRef.current, {
       uid: newUid(), role: 'assistant', who: 'Stable Diffusion',
       content: `[SD image: ${prompt}]` + (seed != null ? ` (seed ${seed})` : ''),
-      imagePath: path
+      imagePath: path, kind: 'image', genParams
     }]);
     await persistConvo(messagesRef.current);
+  }
+
+  // image-message actions route to the SD panel, never to OpenRouter. The
+  // panel mounts lazily, so open it first and retry until its control
+  // surface registers.
+  const sdControlRef = useRef(null);
+  const withSdPanel = (fn) => {
+    setSdMounted(true); setSdOpen(true);
+    const attempt = (n) => {
+      const c = sdControlRef.current;
+      if (c) fn(c);
+      else if (n < 40) setTimeout(() => attempt(n + 1), 50);
+    };
+    attempt(0);
+  };
+  function onImageAction(m, action) {
+    if (!m) return;
+    if (action === 'regenerate') withSdPanel(c => c.regenerate(m.genParams));
+    else if (action === 'reuse-seed') withSdPanel(c => c.regenerate(m.genParams, { keepSeed: true }));
+    else if (action === 'reuse-settings') withSdPanel(c => c.loadSettings(m.genParams));
+    else if (action === 'img2img') withSdPanel(c => c.sendImage(m.imagePath, 'img2img'));
+    else if (action === 'inpaint') withSdPanel(c => c.sendImage(m.imagePath, 'inpaint'));
   }
 
   // images already in this conversation, offered as img2img sources
@@ -660,9 +686,11 @@ export default function App() {
           onStarter={(p) => { setInput(p); inputRef.current && inputRef.current.focus(); }}
           isStreaming={isStreaming}
           onRetryLast={regenerate} onRegenerate={regenerate} onEditLast={editLastUserMessage}
+          onImageAction={onImageAction}
           onToast={toast} />
 
-        {sdMounted && <SdPanel open={sdOpen} onToast={toast} onImage={appendSdImage} convoImages={convoImages} />}
+        {sdMounted && <SdPanel open={sdOpen} onToast={toast} onImage={appendSdImage}
+          convoImages={convoImages} controlRef={sdControlRef} />}
 
         <SidePanel open={sideOpen} paths={allowPaths} onAdd={addAllow} onRemove={removeAllow} />
       </div>

@@ -102,7 +102,7 @@ function NumRow({ label, value, meta, onChange, allowNull, title }) {
   );
 }
 
-export default function SdPanel({ open, onToast, onImage, convoImages }) {
+export default function SdPanel({ open, onToast, onImage, convoImages, controlRef }) {
   const [status, setStatus] = useState('stopped');
   const [statusMsg, setStatusMsg] = useState('');
   const [url, setUrl] = useState('');
@@ -259,9 +259,11 @@ export default function SdPanel({ open, onToast, onImage, convoImages }) {
   const insertLora = (name) => setPrompt(p => (p ? p.trimEnd() + ' ' : '') + loraTag(name, loraWeight));
 
   // ---------- source image (img2img / inpaint) ----------
-  const setSource = (b64, mime, label) => {
+  // `path` is kept when the source came from disk — it lets a stored image
+  // message replay img2img generations after an app restart.
+  const setSource = (b64, mime, label, path) => {
     const img = new Image();
-    img.onload = () => setSrcImage({ b64, mime, label, w: img.naturalWidth, h: img.naturalHeight });
+    img.onload = () => setSrcImage({ b64, mime, label, path, w: img.naturalWidth, h: img.naturalHeight });
     img.onerror = () => onToast('Could not read that image', 'warn');
     img.src = `data:${mime};base64,${b64}`;
     setShowPicker(false);
@@ -269,7 +271,7 @@ export default function SdPanel({ open, onToast, onImage, convoImages }) {
   const pickConvoImage = async (ci) => {
     if (ci.b64) { setSource(ci.b64, ci.mime || 'image/png', ci.label); return; }
     const r = await api.sd.readImage(ci.path);
-    if (r.ok) setSource(r.b64, r.mime, ci.label);
+    if (r.ok) setSource(r.b64, r.mime, ci.label, ci.path);
     else onToast('Could not load image: ' + (r.error || 'unknown'), 'warn');
   };
   const fileToB64 = (f) => new Promise((resolve) => {
@@ -290,7 +292,7 @@ export default function SdPanel({ open, onToast, onImage, convoImages }) {
     if (p) {
       const r = await api.readFiles([p]);
       const a = r.ok && r.files.find(x => x.kind === 'image');
-      if (a) { setSource(a.data, a.mime, a.name); return; }
+      if (a) { setSource(a.data, a.mime, a.name, p); return; }
     }
     const b64 = await fileToB64(f);
     if (b64) setSource(b64, f.type, f.name);
@@ -448,7 +450,13 @@ export default function SdPanel({ open, onToast, onImage, convoImages }) {
     else if (mode !== 'inpaint') for (const k of INPAINT_KEYS) delete x[k];
     for (const k of Object.keys(x)) if (x[k] === null || x[k] === '') delete x[k];
     Object.assign(p, x);
-    if (mode !== 'txt2img') p.denoising_strength = denoise;
+    // hires needs a denoising strength too — Forge crashes on its None default
+    if (mode !== 'txt2img' || xp.enable_hr) p.denoising_strength = denoise;
+    // nothing null-ish crosses the IPC boundary (main sanitizes again)
+    for (const k of Object.keys(p)) {
+      const v = p[k];
+      if (v === null || v === '' || (typeof v === 'number' && !Number.isFinite(v))) delete p[k];
+    }
 
     const o = {};
     const ck = checkpoints.find(c => c.value === currentCkpt);
@@ -460,6 +468,30 @@ export default function SdPanel({ open, onToast, onImage, convoImages }) {
     return p;
   };
 
+  // shared by the Generate button and the chat-side image actions: fires the
+  // request, handles the result, and hands the message BACK the full params
+  // that produced it (pixel buffers stripped at persist time)
+  const runGeneration = async (payload, genMode, promptText) => {
+    setBusy(true); setLastError(''); setProgress({ progress: 0, eta: 0 });
+    try {
+      const r = genMode === 'txt2img' ? await api.sd.txt2img(payload) : await api.sd.img2img(payload);
+      if (!r.ok) {
+        if (r.offline) { setStatus('stopped'); setStatusMsg(r.error); }
+        else setLastError(r.error || 'generation failed');
+        return;
+      }
+      setLastSeed(r.seed);
+      const { initB64, ...replayable } = payload;
+      const genParams = { ...replayable, seed: r.seed, mode: genMode };
+      for (const f of r.files) onImage({ path: f.path, name: f.name, prompt: promptText, seed: r.seed, mode: genMode, genParams });
+    } catch (err) {
+      setLastError(String(err && err.message || err).slice(0, 300));
+    } finally {
+      setBusy(false);
+      setProgress({ progress: 0, eta: 0 });
+    }
+  };
+
   const generate = async () => {
     const p = prompt.trim();
     if (!p) { onToast('Type a prompt first', 'warn'); return; }
@@ -469,32 +501,59 @@ export default function SdPanel({ open, onToast, onImage, convoImages }) {
       maskData = maskRef.current && maskRef.current.getMask();
       if (!maskData) { onToast('Paint a mask first — white areas get repainted', 'warn'); return; }
     }
-    setBusy(true); setLastError(''); setProgress({ progress: 0, eta: 0 });
     const base = buildParams();
-    try {
-      const r = mode === 'txt2img'
-        ? await api.sd.txt2img(base)
-        : await api.sd.img2img({
-            ...base, initB64: srcImage.b64,
-            // srcW/srcH: main rescales the (resolution-capped) mask to the
-            // source image's exact dimensions before encoding
-            ...(maskData ? { maskData, srcW: srcImage.w, srcH: srcImage.h } : {})
-          });
-      if (!r.ok) {
-        if (r.offline) { setStatus('stopped'); setStatusMsg(r.error); }
-        else setLastError(r.error || 'generation failed');
-        return;
-      }
-      setLastSeed(r.seed);
-      for (const f of r.files) onImage({ path: f.path, name: f.name, prompt: p, seed: r.seed, mode });
-    } catch (err) {
-      setLastError(String(err && err.message || err).slice(0, 300));
-    } finally {
-      setBusy(false);
-      setProgress({ progress: 0, eta: 0 });
-    }
+    const payload = mode === 'txt2img' ? base : {
+      ...base, initB64: srcImage.b64,
+      ...(srcImage.path ? { initPath: srcImage.path } : {}),
+      // srcW/srcH: main rescales the (resolution-capped) mask to the
+      // source image's exact dimensions before encoding
+      ...(maskData ? { maskData, srcW: srcImage.w, srcH: srcImage.h } : {})
+    };
+    runGeneration(payload, mode, p);
   };
   const stopJob = () => api.sd.interrupt();
+
+  // ---------- chat-side image actions (Regenerate / Reuse / Send-to) ----------
+  // stored genParams use the wire shape; map the short names back for the
+  // panel-state route (applyParams expects schema names)
+  const applyWireParams = (gp) => {
+    const pr = { ...gp };
+    for (const k of ['prompt', 'negative', 'initB64', 'initPath', 'maskData', 'srcW', 'srcH', 'mode']) delete pr[k];
+    if (gp.cfg != null) { pr.cfg_scale = gp.cfg; delete pr.cfg; }
+    if (gp.sampler != null) { pr.sampler_name = gp.sampler; delete pr.sampler; }
+    if (gp.override_settings) { Object.assign(pr, gp.override_settings); delete pr.override_settings; }
+    if (gp.prompt != null) setPrompt(gp.prompt);
+    if (gp.negative != null) setNegative(gp.negative);
+    applyParams(pr, gp.override_settings && gp.override_settings.sd_model_checkpoint);
+  };
+  useEffect(() => {
+    if (!controlRef) return;
+    controlRef.current = {
+      // kind:'image' Regenerate — replay the stored params (seed -1 unless kept)
+      regenerate: (gp, opts = {}) => {
+        if (!gp) { onToast('This image has no stored settings to replay', 'warn'); return; }
+        if (statusRef.current !== 'running') { onToast('Start Forge first, then regenerate', 'warn'); return; }
+        if (busy) { onToast('A generation is already running', 'warn'); return; }
+        const gmode = gp.mode || 'txt2img';
+        if (gmode !== 'txt2img' && !gp.initPath && !gp.initB64) {
+          onToast('Original source image unavailable — use → img2img instead', 'warn'); return;
+        }
+        const { mode: _m, seed: storedSeed, ...rest } = gp;
+        runGeneration({ ...rest, seed: opts.keepSeed ? storedSeed : -1 }, gmode, gp.prompt || '');
+      },
+      loadSettings: (gp) => {
+        if (!gp) { onToast('This image has no stored settings', 'warn'); return; }
+        applyWireParams(gp);
+        onToast('Settings loaded into the panel');
+      },
+      sendImage: async (path, m) => {
+        setMode(m);
+        const r = await api.sd.readImage(path);
+        if (r && r.ok) setSource(r.b64, r.mime, path.split(/[\\/]/).pop(), path);
+        else onToast('Could not load image: ' + ((r && r.error) || 'unknown'), 'warn');
+      }
+    };
+  });
 
   // ---------- render ----------
   const running = status === 'running';
@@ -683,8 +742,11 @@ export default function SdPanel({ open, onToast, onImage, convoImages }) {
               onChange={e => setHeight(parseInt(e.target.value) || T.height.def)} onBlur={e => setHeight(snapDim(e.target.value))} />
           </label>
           <label className="sd-row">Seed
-            <input type="number" value={seed} onChange={e => setSeed(parseInt(e.target.value) || 0)}
-              title="-1 = random" />
+            <input type="number" value={seed} title="-1 = random"
+              onChange={e => {
+                const n = parseInt(e.target.value, 10);
+                setSeed(Number.isFinite(n) ? n : T.seed.def);   // cleared -> -1 (random)
+              }} />
           </label>
           <NumRow label="Batch size" value={xp.batch_size} meta={T.batch_size} onChange={v => setP('batch_size', v)} />
           <NumRow label="Batch count" value={xp.n_iter} meta={T.n_iter} onChange={v => setP('n_iter', v)}

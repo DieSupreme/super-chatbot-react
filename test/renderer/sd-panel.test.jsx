@@ -194,4 +194,83 @@ describe('App with SD panel', () => {
     // the composer is still there and usable
     expect(screen.getByPlaceholderText(/Type a message/i)).toBeInTheDocument();
   });
+
+  it('Regenerate on an image message fires Forge and NEVER the chat completion', async () => {
+    mock.api.sd.status = async () => ({ ok: true, status: 'running', url: 'http://127.0.0.1:7860', managed: false, log: [] });
+    mock.savedConvos['c1'] = {
+      id: 'c1', title: 'fox pics', model: '', cost: 0, updated: Date.now(),
+      messages: [
+        { role: 'user', content: 'make a fox' },
+        { role: 'assistant', kind: 'image', content: '[SD image: fox] (seed 42)',
+          imagePath: 'D:\\Devlopment\\AI\\IMG\\sd-1.png',
+          genParams: { prompt: 'fox', steps: 25, cfg: 7, width: 512, height: 512, seed: 42, mode: 'txt2img' } }
+      ]
+    };
+    render(<App />);
+    await waitFor(() => screen.getByText('fox pics'));
+    fireEvent.click(screen.getByText('fox pics'));
+    await waitFor(() => screen.getByRole('button', { name: '↻ Regenerate' }));
+
+    fireEvent.click(screen.getByRole('button', { name: '↻ Regenerate' }));
+    await waitFor(() => expect(mock.calls.some(c => c[0] === 'sd:txt2img')).toBe(true), { timeout: 4000 });
+    const call = mock.calls.find(c => c[0] === 'sd:txt2img');
+    expect(call[1].seed).toBe(-1);                 // fresh seed on regenerate
+    expect(call[1].prompt).toBe('fox');
+    expect(mock.calls.some(c => c[0] === 'sendChat')).toBe(false);   // zero OpenRouter calls
+  });
+
+  it('Reuse seed replays with the ORIGINAL seed; chat regenerate still goes to OpenRouter', async () => {
+    mock.api.sd.status = async () => ({ ok: true, status: 'running', url: 'http://127.0.0.1:7860', managed: false, log: [] });
+    mock.savedConvos['c2'] = {
+      id: 'c2', title: 'mixed', model: '', cost: 0, updated: Date.now(),
+      messages: [
+        { role: 'user', content: 'make a fox' },
+        { role: 'assistant', kind: 'image', content: '[SD image: fox] (seed 42)',
+          imagePath: 'D:\\Devlopment\\AI\\IMG\\sd-1.png',
+          genParams: { prompt: 'fox', steps: 25, seed: 42, mode: 'txt2img' } },
+        { role: 'user', content: 'now explain foxes' },
+        { role: 'assistant', content: 'Foxes are small canids.' }
+      ]
+    };
+    render(<App />);
+    await waitFor(() => screen.getByText('mixed'));
+    fireEvent.click(screen.getByText('mixed'));
+    await waitFor(() => screen.getByRole('button', { name: '♻ Reuse seed' }));
+
+    // latest assistant message is chat -> its Regenerate (the untitled one;
+    // the image message carries its own titled Regenerate) goes to OpenRouter
+    const chatRegen = screen.getAllByRole('button', { name: '↻ Regenerate' }).find(b => !b.title);
+    fireEvent.click(chatRegen);
+    await waitFor(() => expect(mock.calls.some(c => c[0] === 'sendChat')).toBe(true), { timeout: 4000 });
+    expect(mock.calls.some(c => c[0] === 'sd:txt2img')).toBe(false);
+
+    // Reuse seed on the image -> Forge with the ORIGINAL seed
+    // (image actions reappear once the chat stream settles)
+    await waitFor(() => screen.getByRole('button', { name: '♻ Reuse seed' }), { timeout: 4000 });
+    mock.calls.length = 0;
+    fireEvent.click(screen.getByRole('button', { name: '♻ Reuse seed' }));
+    await waitFor(() => expect(mock.calls.some(c => c[0] === 'sd:txt2img')).toBe(true), { timeout: 4000 });
+    expect(mock.calls.find(c => c[0] === 'sd:txt2img')[1].seed).toBe(42);   // exact repro seed
+    expect(mock.calls.some(c => c[0] === 'sendChat')).toBe(false);
+  });
+
+  it('legacy conversation (no kind, no genParams) loads and routes correctly', async () => {
+    mock.savedConvos['old'] = {
+      id: 'old', title: 'pre-kind convo', model: '', cost: 0, updated: Date.now(),
+      messages: [
+        { role: 'user', content: 'hi' },
+        { role: 'assistant', content: 'hello there' },
+        { role: 'assistant', content: '[SD image: sunset] (seed 7)', imagePath: 'D:\\Devlopment\\AI\\IMG\\sd-9.png' }
+      ]
+    };
+    render(<App />);
+    await waitFor(() => screen.getByText('pre-kind convo'));
+    fireEvent.click(screen.getByText('pre-kind convo'));
+    await waitFor(() => screen.getByText('hello there'));
+    // imagePath infers kind:'image': send-to actions exist, replay actions
+    // (which need stored params) do not, and no chat Regenerate is offered on it
+    expect(screen.getByRole('button', { name: '→ img2img' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '↻ Regenerate' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '♻ Reuse seed' })).not.toBeInTheDocument();
+  });
 });

@@ -112,9 +112,11 @@ function SdImage({ path, prompt, onToast }) {
 }
 
 // ---------- one message ----------
-function MessageBubble({ m, isLatestAi, isStreamingAny, onRetry, onRegenerate, onEditLast, onToast }) {
+function MessageBubble({ m, isLatestAi, isStreamingAny, onRetry, onRegenerate, onEditLast, onImageAction, onToast }) {
   const [copied, setCopied] = useState(false);
   const isUser = m.role === 'user';
+  // discriminator (old conversations have no `kind`; imagePath marks SD results)
+  const isImage = m.kind === 'image' || (!!m.imagePath && m.kind !== 'chat');
   const rawText = isUser ? extractText(m.content) : (m.content || '');
 
   // parse once per content change; segments feed Markdown, the zip bar, and edit cards
@@ -191,14 +193,31 @@ function MessageBubble({ m, isLatestAi, isStreamingAny, onRetry, onRegenerate, o
       {showTools && (
         <div className="m-tools">
           <button onClick={copy}>{copied ? 'Copied' : 'Copy'}</button>
-          {!isUser && isLatestAi && <button onClick={() => !isStreamingAny && onRetry()}>↻ Retry</button>}
+          {!isUser && !isImage && isLatestAi && <button onClick={() => !isStreamingAny && onRetry()}>↻ Retry</button>}
         </div>
       )}
 
-      {!isUser && isLatestAi && !isStreamingAny && (
+      {/* chat messages regenerate via OpenRouter — unchanged */}
+      {!isUser && !isImage && isLatestAi && !isStreamingAny && (
         <div className="msg-actions">
           <button onClick={onRegenerate}>↻ Regenerate</button>
           <button onClick={onEditLast}>✎ Edit my message</button>
+        </div>
+      )}
+
+      {/* image messages route to Forge via the SD panel — never to chat.
+          Replay actions need the stored params; inpaint replay additionally
+          needs the in-memory mask (gone after an app restart). */}
+      {isImage && !isStreamingAny && (
+        <div className="msg-actions">
+          {m.genParams && (m.genParams.mode !== 'inpaint' || m.genParams.maskData) && <>
+            <button title="Same settings, new seed" onClick={() => onImageAction(m, 'regenerate')}>↻ Regenerate</button>
+            <button title="Exact reproduction with the original seed" onClick={() => onImageAction(m, 'reuse-seed')}>♻ Reuse seed</button>
+          </>}
+          {m.genParams &&
+            <button title="Load these settings into the panel" onClick={() => onImageAction(m, 'reuse-settings')}>⚙ Reuse settings</button>}
+          <button onClick={() => onImageAction(m, 'img2img')}>→ img2img</button>
+          <button onClick={() => onImageAction(m, 'inpaint')}>→ inpaint</button>
         </div>
       )}
     </div>
@@ -235,7 +254,7 @@ function EmptyState({ variant, onStarter }) {
 
 // ---------- the scrolling log ----------
 export default function ChatLog({ messages, emptyVariant, onStarter, isStreaming,
-  onRetryLast, onRegenerate, onEditLast, onToast }) {
+  onRetryLast, onRegenerate, onEditLast, onImageAction, onToast }) {
   const logRef = useRef(null);
   const atBottomRef = useRef(true);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
@@ -265,6 +284,7 @@ export default function ChatLog({ messages, emptyVariant, onStarter, isStreaming
                 isLatestAi={m.uid === lastAiUid}
                 isStreamingAny={isStreaming}
                 onRetry={onRetryLast} onRegenerate={onRegenerate} onEditLast={onEditLast}
+                onImageAction={onImageAction}
                 onToast={onToast} />
             ))}
       </div>
