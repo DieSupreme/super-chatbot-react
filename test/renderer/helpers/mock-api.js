@@ -79,6 +79,33 @@ export function createMockApi() {
       onLog: () => () => {},
       onStatus: () => () => {}
     },
+    comfy: {
+      status: async () => ({ ok: true, status: 'stopped', url: 'http://127.0.0.1:8188', managed: false, log: [] }),
+      start: async () => ({ ok: true, status: 'starting' }),
+      stop: async () => ({ ok: true, portFree: true }),
+      workflows: async () => ({
+        ok: true,
+        list: [{
+          name: 'smoke-test', label: 'Smoke test — solid-color clip (no model needed)',
+          controls: {
+            prompt: { node: '9', input: 'text', type: 'text' },
+            width: { node: '1', input: 'width', type: 'int', default: 320, min: 64, max: 2048 },
+            frames: { node: '1', input: 'batch_size', type: 'int', default: 24, min: 1, max: 480 },
+            fps: { node: '2', input: 'fps', type: 'float', default: 12, min: 1, max: 60 },
+            seed: { node: '3', input: 'noise_seed', type: 'seed' }
+          }
+        }]
+      }),
+      generate: async (p) => {
+        calls.push(['comfy:generate', p]);
+        return { ok: true, files: [{ path: 'D:\\Devlopment\\AI\\IMG\\vid-1.mp4', name: 'vid-1.mp4' }], seed: 99, elapsed: 3.2 };
+      },
+      interrupt: async () => ({ ok: true }),
+      readVideo: async () => ({ ok: true, b64: 'AAAA', mime: 'video/mp4' }),
+      onProgress: () => () => {},
+      onLog: () => () => {},
+      onStatus: () => () => {}
+    },
     term: {
       create: async () => ({ ok: true, id: 1, cwd: '', cwdFallback: false }),
       reattach: async () => ({ ok: true, ring: '' }),

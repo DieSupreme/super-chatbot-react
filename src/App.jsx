@@ -216,14 +216,15 @@ export default function App() {
     const who = modelLabel(c.model || stateRef.current.model);
     setMessages((c.messages || []).map(m => attachThinkToggle({
       uid: newUid(), role: m.role, content: m.content,
-      who: m.imagePath ? 'Stable Diffusion' : who,
+      who: m.videoPath ? 'ComfyUI' : m.imagePath ? 'Stable Diffusion' : who,
       attachNames: m.attachNames,
       reasoning: m.reasoning,
       citations: m.citations,
       imagePath: m.imagePath,
+      videoPath: m.videoPath,
       // discriminator with backwards compat: files written before `kind`
       // existed mark SD results only by imagePath; plain messages are chat
-      kind: m.kind || (m.imagePath ? 'image' : 'chat'),
+      kind: m.kind || (m.videoPath ? 'video' : m.imagePath ? 'image' : 'chat'),
       genParams: m.genParams,
       thinkOpen: m.reasoning ? false : undefined
     })));
@@ -587,26 +588,52 @@ export default function App() {
     await persistConvo(messagesRef.current);
   }
 
-  // image-message actions route to the SD panel, never to OpenRouter. The
-  // panel mounts lazily, so open it first and retry until its control
-  // surface registers.
+  // video results: same shape as image results, kind 'video' + videoPath
+  async function appendVideo({ path, prompt, seed, genParams }) {
+    if (!messagesRef.current.length) {
+      const t = '🎬 ' + (prompt || 'video').slice(0, 38);
+      setCurrentTitle(t);
+      stateRef.current.currentTitle = t;
+    }
+    setMessages([...messagesRef.current, {
+      uid: newUid(), role: 'assistant', who: 'ComfyUI',
+      content: `[video: ${prompt || genParams.workflow}]` + (seed != null ? ` (seed ${seed})` : ''),
+      videoPath: path, kind: 'video', genParams
+    }]);
+    await persistConvo(messagesRef.current);
+  }
+
+  // image/video message actions route to the generation panel, never to
+  // OpenRouter. The panel mounts lazily and the video half mounts on backend
+  // switch, so: open, request the backend, retry until the needed control
+  // function registers.
   const sdControlRef = useRef(null);
-  const withSdPanel = (fn) => {
+  const withSdControl = (backendName, fnName, call) => {
     setSdMounted(true); setSdOpen(true);
+    let switched = false;
     const attempt = (n) => {
       const c = sdControlRef.current;
-      if (c) fn(c);
-      else if (n < 40) setTimeout(() => attempt(n + 1), 50);
+      if (c && c.showBackend && !switched) { switched = true; c.showBackend(backendName); }
+      // video functions exist only while the video body is mounted, so their
+      // presence doubles as "the right backend is showing"
+      if (c && typeof c[fnName] === 'function') { call(c); return; }
+      if (n < 40) setTimeout(() => attempt(n + 1), 50);
     };
     attempt(0);
   };
   function onImageAction(m, action) {
     if (!m) return;
-    if (action === 'regenerate') withSdPanel(c => c.regenerate(m.genParams));
-    else if (action === 'reuse-seed') withSdPanel(c => c.regenerate(m.genParams, { keepSeed: true }));
-    else if (action === 'reuse-settings') withSdPanel(c => c.loadSettings(m.genParams));
-    else if (action === 'img2img') withSdPanel(c => c.sendImage(m.imagePath, 'img2img'));
-    else if (action === 'inpaint') withSdPanel(c => c.sendImage(m.imagePath, 'inpaint'));
+    if (m.kind === 'video') {
+      if (action === 'regenerate') withSdControl('video', 'regenerateVideo', c => c.regenerateVideo(m.genParams));
+      else if (action === 'reuse-seed') withSdControl('video', 'regenerateVideo', c => c.regenerateVideo(m.genParams, { keepSeed: true }));
+      else if (action === 'reuse-settings') withSdControl('video', 'loadVideoSettings', c => c.loadVideoSettings(m.genParams));
+      return;
+    }
+    if (action === 'regenerate') withSdControl('image', 'regenerate', c => c.regenerate(m.genParams));
+    else if (action === 'reuse-seed') withSdControl('image', 'regenerate', c => c.regenerate(m.genParams, { keepSeed: true }));
+    else if (action === 'reuse-settings') withSdControl('image', 'loadSettings', c => c.loadSettings(m.genParams));
+    else if (action === 'img2img') withSdControl('image', 'sendImage', c => c.sendImage(m.imagePath, 'img2img'));
+    else if (action === 'inpaint') withSdControl('image', 'sendImage', c => c.sendImage(m.imagePath, 'inpaint'));
   }
 
   // images already in this conversation, offered as img2img sources
@@ -689,7 +716,7 @@ export default function App() {
           onImageAction={onImageAction}
           onToast={toast} />
 
-        {sdMounted && <SdPanel open={sdOpen} onToast={toast} onImage={appendSdImage}
+        {sdMounted && <SdPanel open={sdOpen} onToast={toast} onImage={appendSdImage} onVideo={appendVideo}
           convoImages={convoImages} controlRef={sdControlRef} />}
 
         <SidePanel open={sideOpen} paths={allowPaths} onAdd={addAllow} onRemove={removeAllow} />

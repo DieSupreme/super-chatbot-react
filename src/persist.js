@@ -14,8 +14,9 @@ export function toPersistedMessage(m) {
   if (m.attachNames?.length) out.attachNames = m.attachNames;
   if (m.reasoning) out.reasoning = m.reasoning;
   if (m.citations?.length) out.citations = m.citations;
-  // local SD images live on disk — persist only the path, never the pixels
+  // local SD images / ComfyUI videos live on disk — persist only the path
   if (m.imagePath) out.imagePath = m.imagePath;
+  if (m.videoPath) out.videoPath = m.videoPath;
   // message discriminator: 'image' = SD generation; absent = chat (old files)
   if (m.kind && m.kind !== 'chat') out.kind = m.kind;
   if (m.genParams) {

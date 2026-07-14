@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import api from '../api.js';
 import { reconcileCheckpoints, loraTag, snapDim, clampParam, parseInfotext } from '../sd-utils.js';
 import SdMaskCanvas from './SdMaskCanvas.jsx';
+import VideoBody from './VideoPanel.jsx';
 import SCHEMA from '../sd-schema.json';
 import SD_DEFAULTS from '../sd-defaults.json';
 
@@ -102,7 +103,11 @@ function NumRow({ label, value, meta, onChange, allowNull, title }) {
   );
 }
 
-export default function SdPanel({ open, onToast, onImage, convoImages, controlRef }) {
+export default function SdPanel({ open, onToast, onImage, onVideo, convoImages, controlRef }) {
+  // which backend the panel drives: 'image' (Forge) or 'video' (ComfyUI).
+  // They never run simultaneously — main enforces it; the toggle states it.
+  const [backend, setBackend] = useState('image');
+  const [videoBusy, setVideoBusy] = useState(false);
   const [status, setStatus] = useState('stopped');
   const [statusMsg, setStatusMsg] = useState('');
   const [url, setUrl] = useState('');
@@ -526,9 +531,20 @@ export default function SdPanel({ open, onToast, onImage, convoImages, controlRe
     if (gp.negative != null) setNegative(gp.negative);
     applyParams(pr, gp.override_settings && gp.override_settings.sd_model_checkpoint);
   };
+  // switching modes mid-generation would orphan the progress UI — refuse
+  const switchBackend = (b) => {
+    if (b === backend) return;
+    if (busy || videoBusy) { onToast('A generation is running — stop it before switching modes', 'warn'); return; }
+    setBackend(b);
+  };
+
   useEffect(() => {
     if (!controlRef) return;
+    // MERGE onto the shared control surface — VideoBody adds its video
+    // functions to the same object when the video backend is mounted
     controlRef.current = {
+      ...(controlRef.current || {}),
+      showBackend: switchBackend,
       // kind:'image' Regenerate — replay the stored params (seed -1 unless kept)
       regenerate: (gp, opts = {}) => {
         if (!gp) { onToast('This image has no stored settings to replay', 'warn'); return; }
@@ -576,6 +592,17 @@ export default function SdPanel({ open, onToast, onImage, convoImages, controlRe
   return (
     <aside className={'sd-panel' + (open ? ' open' : '')}
       onDrop={onPanelDrop} onDragOver={e => { e.preventDefault(); }}>
+      {/* backend mode toggle — one GPU, one backend at a time */}
+      <div className="sd-tabs sd-backend" title="Forge and ComfyUI never run together — starting one stops the other">
+        <button className={'sd-tab' + (backend === 'image' ? ' active' : '')}
+          onClick={() => switchBackend('image')}>Image · Forge</button>
+        <button className={'sd-tab' + (backend === 'video' ? ' active' : '')}
+          onClick={() => switchBackend('video')}>Video · ComfyUI</button>
+      </div>
+
+      {backend === 'video' ? (
+        <VideoBody onToast={onToast} onVideo={onVideo} controlRef={controlRef} onBusyChange={setVideoBusy} />
+      ) : (<>
       <div className="sd-head">
         <h3>Stable Diffusion</h3>
         <StatusPill status={status} />
@@ -981,6 +1008,7 @@ export default function SdPanel({ open, onToast, onImage, convoImages, controlRe
       </div>
 
       <LogPane lines={logLines} open={logOpen} onToggle={setLogOpen} />
+      </>)}
     </aside>
   );
 }

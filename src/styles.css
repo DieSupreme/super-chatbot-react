@@ -190,9 +190,10 @@ footer { display:flex; padding:12px 16px; background:var(--bg-1); border-top:1px
   padding:8px 12px; font-size:var(--fs-1); font-weight:400; color:var(--text); cursor:pointer; text-align:left; max-width:200px; }
 .starter:hover { filter:none; border-color:var(--line-2); background:var(--bg-3); }
 
-/* generated image in chat */
+/* generated image / video in chat */
 .gen-img { max-width:100%; border-radius:var(--r-2); border:1px solid var(--line); display:block; margin-bottom:8px; }
-.gen-actions { display:flex; gap:8px; }
+.gen-vid { max-width:100%; border-radius:var(--r-2); border:1px solid var(--line); display:block; margin-bottom:8px; background:var(--bg-0); }
+.gen-actions { display:flex; gap:8px; align-items:center; }
 
 /* side panel: editable files */
 .side-head { padding:14px 16px; border-bottom:1px solid var(--line); }
@@ -374,6 +375,12 @@ footer { display:flex; padding:12px 16px; background:var(--bg-1); border-top:1px
 .term-drop .inner .lbl { font-size:14px; color:var(--hi); letter-spacing:.5px; }
 
 /* ================= local Stable Diffusion panel ================= */
+/* backend mode toggle (Image · Forge / Video · ComfyUI) */
+.sd-backend { padding:10px 14px 0; margin-bottom:0; flex-shrink:0; }
+/* long-run progress: executing node + percent + elapsed */
+.vid-progress-meta { display:flex; justify-content:space-between; font-size:var(--fs-0);
+  color:var(--text-2); margin-bottom:4px; }
+.vid-progress-meta span:first-child { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .sd-head { display:flex; align-items:center; gap:8px; padding:12px 14px; border-bottom:1px solid var(--line); flex-shrink:0; }
 .sd-head h3 { margin:0; font-size:14px; flex:1; }
 /* Stop Forge kills the process — warn before the click, like Quit all */

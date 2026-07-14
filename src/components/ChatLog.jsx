@@ -82,6 +82,30 @@ function GenImage({ image, prompt, onToast }) {
   );
 }
 
+// ---------- ComfyUI video (on disk; loaded via IPC on mount) ----------
+// Only the path lives in message state; bytes come over IPC as a data: URI
+// (CSP allows media-src data:, nothing else).
+function VideoMsg({ path, onToast }) {
+  const [vid, setVid] = useState(null);      // { b64, mime } | 'missing'
+  useEffect(() => {
+    let alive = true;
+    api.comfy.readVideo(path).then(r => {
+      if (alive) setVid(r && r.ok ? { b64: r.b64, mime: r.mime } : 'missing');
+    });
+    return () => { alive = false; };
+  }, [path]);
+  if (vid === 'missing') return <span className="err">video not found: {path}</span>;
+  if (!vid) return <span className="dots">loading video</span>;
+  return (
+    <>
+      <video className="gen-vid" controls loop src={`data:${vid.mime};base64,${vid.b64}`} />
+      <div className="gen-actions">
+        <span className="sd-file" title={path}>{path.split(/[\\/]/).pop()}</span>
+      </div>
+    </>
+  );
+}
+
 // ---------- local SD image (on disk; loaded via IPC on mount) ----------
 // Only the file path lives in message state — pixels are fetched when the
 // bubble mounts and stay in this component's local state.
@@ -116,7 +140,8 @@ function MessageBubble({ m, isLatestAi, isStreamingAny, onRetry, onRegenerate, o
   const [copied, setCopied] = useState(false);
   const isUser = m.role === 'user';
   // discriminator (old conversations have no `kind`; imagePath marks SD results)
-  const isImage = m.kind === 'image' || (!!m.imagePath && m.kind !== 'chat');
+  const isVideo = m.kind === 'video' || (!!m.videoPath && m.kind !== 'chat');
+  const isImage = !isVideo && (m.kind === 'image' || (!!m.imagePath && m.kind !== 'chat'));
   const rawText = isUser ? extractText(m.content) : (m.content || '');
 
   // parse once per content change; segments feed Markdown, the zip bar, and edit cards
@@ -141,6 +166,8 @@ function MessageBubble({ m, isLatestAi, isStreamingAny, onRetry, onRegenerate, o
   let body;
   if (m.error) {
     body = <span className="err">{m.error}</span>;
+  } else if (isVideo && m.videoPath) {
+    body = <VideoMsg path={m.videoPath} onToast={onToast} />;
   } else if (m.imagePending) {
     body = <span className="dots">generating image</span>;
   } else if (m.image) {
@@ -193,12 +220,21 @@ function MessageBubble({ m, isLatestAi, isStreamingAny, onRetry, onRegenerate, o
       {showTools && (
         <div className="m-tools">
           <button onClick={copy}>{copied ? 'Copied' : 'Copy'}</button>
-          {!isUser && !isImage && isLatestAi && <button onClick={() => !isStreamingAny && onRetry()}>↻ Retry</button>}
+          {!isUser && !isImage && !isVideo && isLatestAi && <button onClick={() => !isStreamingAny && onRetry()}>↻ Retry</button>}
+        </div>
+      )}
+
+      {/* video messages route to ComfyUI via the panel — never to chat */}
+      {isVideo && !isStreamingAny && m.genParams && (
+        <div className="msg-actions">
+          <button title="Same settings, new seed" onClick={() => onImageAction(m, 'regenerate')}>↻ Regenerate</button>
+          <button title="Exact reproduction with the original seed" onClick={() => onImageAction(m, 'reuse-seed')}>♻ Reuse seed</button>
+          <button title="Load these settings into the panel" onClick={() => onImageAction(m, 'reuse-settings')}>⚙ Reuse settings</button>
         </div>
       )}
 
       {/* chat messages regenerate via OpenRouter — unchanged */}
-      {!isUser && !isImage && isLatestAi && !isStreamingAny && (
+      {!isUser && !isImage && !isVideo && isLatestAi && !isStreamingAny && (
         <div className="msg-actions">
           <button onClick={onRegenerate}>↻ Regenerate</button>
           <button onClick={onEditLast}>✎ Edit my message</button>
