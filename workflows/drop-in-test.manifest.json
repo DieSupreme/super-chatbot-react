@@ -1,0 +1,9 @@
+{
+  "label": "Drop-in test — magenta clip (added with zero code changes)",
+  "backend": "comfy",
+  "controls": {
+    "frames":   { "node": "1", "input": "batch_size", "type": "int",   "default": 12, "min": 1, "max": 120 },
+    "fps":      { "node": "2", "input": "fps",        "type": "float", "default": 6,  "min": 1, "max": 60 },
+    "sidelen":  { "node": "1", "input": "width",      "type": "int",   "default": 256, "min": 64, "max": 1024, "step": 16 }
+  }
+}
