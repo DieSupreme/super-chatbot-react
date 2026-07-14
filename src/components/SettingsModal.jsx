@@ -8,6 +8,7 @@ export default function SettingsModal({ open, onClose, settings, update }) {
       <div className="settings-inner">
         <div className="settings-head">Settings <button className="ghost" onClick={onClose}>Done</button></div>
 
+        <div className="set-group">Chat</div>
         <label className="set-row">Default model
           <select value={settings.defaultModel}
             onChange={e => update({ defaultModel: e.target.value })}>
@@ -26,6 +27,7 @@ export default function SettingsModal({ open, onClose, settings, update }) {
             onChange={e => update({ maxTok: parseInt(e.target.value) })} />
         </label>
 
+        <div className="set-group">Image generation</div>
         <label className="set-row">Image model
           <select value={settings.imgModel} onChange={e => update({ imgModel: e.target.value })}>
             {IMG_MODELS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
@@ -38,7 +40,8 @@ export default function SettingsModal({ open, onClose, settings, update }) {
           </select>
         </label>
 
-        <label className="set-row">Forge URL (local Stable Diffusion)
+        <div className="set-group">Local Stable Diffusion</div>
+        <label className="set-row">Forge URL
           <input type="text" className="set-text" value={settings.sdForgeUrl}
             onChange={e => update({ sdForgeUrl: e.target.value })} spellCheck="false" />
         </label>

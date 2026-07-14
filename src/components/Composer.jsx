@@ -52,17 +52,21 @@ export default function Composer({ input, setInput, onSend, onStop, isStreaming,
     <>
       <AttachBar pending={pending} onRemove={onRemovePending} model={model} />
       <footer>
-        <button className="ghost" title="Attach files" onClick={onAttach}>＋</button>
-        <textarea id="input" ref={ref} rows={1} value={input}
-          placeholder="Type a message…  (Enter to send · Shift+Enter for newline)"
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={e => {
-            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (!isStreaming) onSend(); }
-          }} />
-        <button id="send" className={isStreaming ? 'stopping' : ''}
-          onClick={() => isStreaming ? onStop() : onSend()}>
-          {isStreaming ? 'Stop' : 'Send'}
-        </button>
+        {/* one framed "command line": the frame carries the focus ring, the
+            controls sit inside it and ride the textarea as it grows */}
+        <div className="composer">
+          <button className="ghost comp-attach" title="Attach files" onClick={onAttach}>＋</button>
+          <textarea id="input" ref={ref} rows={1} value={input}
+            placeholder="Type a message…  (Enter to send · Shift+Enter for newline)"
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (!isStreaming) onSend(); }
+            }} />
+          <button id="send" className={isStreaming ? 'stopping' : ''}
+            onClick={() => isStreaming ? onStop() : onSend()}>
+            {isStreaming ? 'Stop' : 'Send'}
+          </button>
+        </div>
       </footer>
     </>
   );

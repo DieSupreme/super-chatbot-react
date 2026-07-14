@@ -1,0 +1,79 @@
+/* ============================================================
+   Design tokens — the single source for color, space, type,
+   radius, elevation, layers, and motion.
+
+   Thesis: an achromatic instrument panel. Surfaces and ink are
+   pure greys; the ONLY hues in the app are state signals
+   (--ok / --warn / --err). Emphasis is carried by VALUE — the
+   near-white --hi is the "accent": primary buttons, selection
+   borders, focus rings. If something is colored, it means
+   something is happening.
+
+   Legacy aliases at the bottom keep every not-yet-migrated view
+   working; new/refactored CSS should use the token names.
+   ============================================================ */
+:root {
+  /* surfaces — darkest to most raised */
+  --bg-0:#0a0a0b;      /* window base, code wells */
+  --bg-1:#111113;      /* panels, header, asides */
+  --bg-2:#19191c;      /* inputs, cards, raised chrome */
+  --bg-3:#222227;      /* hover / active fills, user bubble */
+
+  /* lines */
+  --line:#26262b;      /* resting borders, dividers */
+  --line-2:#3f3f46;    /* hover borders, scrollbar hover */
+
+  /* ink */
+  --text:#c9c9ce;      /* primary text */
+  --text-2:#8f8f97;    /* secondary: labels, hints, summaries */
+  --text-3:#5c5c64;    /* faint: comments, disabled-ish */
+  --hi:#e8e8ee;        /* the accent: selection, focus, primary fills */
+  --ink-inv:#0b0b0c;   /* text on --hi / light fills */
+
+  /* state hues — the only color in the app */
+  --ok:#7fc98a;
+  --warn:#c9a24a;
+  --err:#d0796f;
+
+  /* type */
+  --font:"Hiragino Sans","Segoe UI",system-ui,sans-serif;
+  --mono:"Consolas","SF Mono",monospace;
+  --fs-0:11px;         /* micro: hints, chips, badges */
+  --fs-1:12px;         /* dense UI: panel controls, tabs */
+  --fs-2:13px;         /* standard controls */
+  --fs-3:15px;         /* reading: messages, composer */
+  --fs-4:17px;         /* headings, logo */
+
+  /* spacing scale */
+  --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:24px;
+
+  /* radii */
+  --r-1:6px;           /* controls */
+  --r-2:10px;          /* cards, panels, modals */
+  --r-pill:999px;
+
+  /* elevation */
+  --shadow-1:0 2px 10px rgba(0,0,0,.5);
+  --shadow-2:0 6px 24px rgba(0,0,0,.55);
+
+  /* layers */
+  --z-lift:50;         /* floating in-view chrome (scroll button) */
+  --z-overlay:900;     /* full-surface overlays (drop zones) */
+  --z-toast:1000;
+  --z-modal:1100;
+
+  /* motion — nothing in the app may exceed 150ms */
+  --t-1:80ms;
+  --t-2:120ms;
+
+  /* ---- legacy aliases (pre-token view CSS still reads these) ---- */
+  --ink:var(--bg-0);
+  --panel:var(--bg-1);
+  --panel-2:var(--bg-2);
+  --edge:var(--line);
+  --muted:var(--text-2);
+  --accent:var(--hi);
+  --accent-2:var(--hi);
+  --user-bubble:var(--bg-3);
+  --ai-bubble:var(--bg-1);
+}

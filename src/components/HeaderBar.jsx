@@ -33,23 +33,29 @@ export default function HeaderBar({
 
       <span id="costBadge" title="Cost of this conversation so far">{fmtCost(cost)}</span>
 
-      <label className="chk" title="When on, the model sees the whole conversation. When off, each message is sent with no prior context.">
-        <input type="checkbox" checked={memory} onChange={e => setMemory(e.target.checked)} /> Memory
-      </label>
-      <label className="chk" title="When on, the model can search the web for current information (~$0.005 per search via OpenRouter).">
-        <input type="checkbox" checked={web} onChange={e => setWeb(e.target.checked)} /> Web
-      </label>
-      <label className="chk" title="When on, your message generates an image instead of a text reply.">
-        <input type="checkbox" checked={imageMode} onChange={e => setImageMode(e.target.checked)} /> Image
-      </label>
+      {/* send options — these change what the next Send does */}
+      <div className="hdr-modes">
+        <label className="chk" title="When on, the model sees the whole conversation. When off, each message is sent with no prior context.">
+          <input type="checkbox" checked={memory} onChange={e => setMemory(e.target.checked)} /> Memory
+        </label>
+        <label className="chk" title="When on, the model can search the web for current information (~$0.005 per search via OpenRouter).">
+          <input type="checkbox" checked={web} onChange={e => setWeb(e.target.checked)} /> Web
+        </label>
+        <label className="chk" title="When on, your message generates an image instead of a text reply.">
+          <input type="checkbox" checked={imageMode} onChange={e => setImageMode(e.target.checked)} /> Image
+        </label>
+      </div>
 
-      <button className="ghost" onClick={onToggleSysPrompt} title="Set standing instructions for this chat">Instructions</button>
-      <button className="ghost" onClick={onToggleSide}>Files</button>
-      <button className={'ghost' + (sdOpen ? ' active' : '')} onClick={onToggleSd}
-        title="Local Stable Diffusion via Forge">🎨 SD</button>
-      <button className={'ghost' + (view === 'terminal' ? ' active' : '')} onClick={onToggleView}
-        title="Toggle the embedded terminal">{view === 'terminal' ? '💬 Chat' : '⌗ Terminal'}</button>
-      <button className="ghost" onClick={onOpenSettings} title="Settings">⚙</button>
+      {/* app navigation */}
+      <div className="hdr-nav">
+        <button className="ghost" onClick={onToggleSysPrompt} title="Set standing instructions for this chat">Instructions</button>
+        <button className="ghost" onClick={onToggleSide}>Files</button>
+        <button className={'ghost' + (sdOpen ? ' active' : '')} onClick={onToggleSd}
+          title="Local Stable Diffusion via Forge">🎨 SD</button>
+        <button className={'ghost' + (view === 'terminal' ? ' active' : '')} onClick={onToggleView}
+          title="Toggle the embedded terminal">{view === 'terminal' ? '💬 Chat' : '⌗ Terminal'}</button>
+        <button className="ghost" onClick={onOpenSettings} title="Settings">⚙</button>
+      </div>
     </header>
   );
 }

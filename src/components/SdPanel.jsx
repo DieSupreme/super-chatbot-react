@@ -823,11 +823,14 @@ export default function SdPanel({ open, onToast, onImage, convoImages }) {
         <div className="sd-pnginfo" title="Reads the parameters Forge embeds in its PNGs">
           ⤵ Drop a Forge PNG anywhere on this panel to import its settings
         </div>
+      </div>
 
+      {/* action bar pinned outside the scroll — Generate, progress, and errors
+          stay visible however deep the parameter list goes */}
+      <div className="sd-actions">
         {busy && <ProgressBar progress={progress.progress} eta={progress.eta} />}
         {lastError && <div className="err sd-err">{lastError}</div>}
         {lastSeed != null && !busy && !lastError && <div className="sd-hint">last seed: {lastSeed}</div>}
-
         <button className={'sd-gen' + (busy ? ' stopping' : '')} disabled={!running}
           onClick={() => busy ? stopJob() : generate()}>
           {busy ? 'Stop' : 'Generate'}
