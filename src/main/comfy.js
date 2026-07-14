@@ -72,6 +72,7 @@ function registerComfyIpc(app, getWin) {
 
   async function stopComfy() {
     stopStartPoll();
+    objectInfoCache.clear();          // node list can differ on next boot
     if (proc) {
       const pid = proc.pid;
       pushLog(`[app] stopping ComfyUI (pid ${pid})`);
@@ -113,6 +114,7 @@ function registerComfyIpc(app, getWin) {
       proc = core.spawnComfy(root, urlHostPort().port);
     } catch (err) { proc = null; return { ok: false, error: err.message }; }
     pushLog(`[app] spawn: ${proc.spawnargs.join(' ')} (cwd=${root})`);
+    objectInfoCache.clear();
     setStatus('starting');
 
     let buf = { out: '', err: '' };
@@ -158,6 +160,25 @@ function registerComfyIpc(app, getWin) {
   ipcMain.handle('comfy:workflows', () => {
     try { return { ok: true, list: core.listWorkflows(workflowsDir) }; }
     catch (err) { return { ok: false, error: err.message }; }
+  });
+
+  // ---------- live dropdown options ----------
+  // Manifests declare "options_from": "object_info:<NodeType>:<input>" —
+  // resolved here against ComfyUI's /object_info/<NodeType> so sampler /
+  // scheduler / model-file lists are never hardcoded. Cached per node type;
+  // the cache drops whenever the server (re)starts or stops.
+  const objectInfoCache = new Map();
+  ipcMain.handle('comfy:objectInfo', async (_e, { nodeType, input }) => {
+    try {
+      const key = String(nodeType || '');
+      if (!key || /[^\w.-]/.test(key)) return { ok: false, error: 'bad node type' };
+      if (!objectInfoCache.has(key)) {
+        const r = await cfetch('/object_info/' + encodeURIComponent(key), { timeoutMs: 10000 });
+        if (!r.ok) return { ok: false, error: `object_info ${key}: HTTP ${r.status}` };
+        objectInfoCache.set(key, await r.json());
+      }
+      return { ok: true, options: core.objectInfoOptions(objectInfoCache.get(key), key, String(input || '')) };
+    } catch (err) { return offline(err); }
   });
 
   // ---------- generation ----------
@@ -232,7 +253,9 @@ function registerComfyIpc(app, getWin) {
         }, 1500);
       });
 
-      // find the produced file(s) in the outputs, favouring video extensions
+      // find the produced file(s) in the outputs, favouring the extensions
+      // that match the workflow's declared media
+      const media = core.workflowMedia(manifest);
       const produced = [];
       for (const nodeOut of Object.values(history.outputs)) {
         for (const arr of Object.values(nodeOut)) {
@@ -243,7 +266,8 @@ function registerComfyIpc(app, getWin) {
         }
       }
       const isVideo = (f) => /\.(mp4|webm|mov|avi|gif|webp)$/i.test(f.filename);
-      const pick = produced.find(isVideo) || produced[0];
+      const isImage = (f) => /\.(png|jpe?g|webp|bmp)$/i.test(f.filename);
+      const pick = (media === 'image' ? produced.find(isImage) : produced.find(isVideo)) || produced[0];
       if (!pick) return { ok: false, error: 'workflow finished but produced no files' };
 
       const q = new URLSearchParams({ filename: pick.filename, subfolder: pick.subfolder || '', type: pick.type || 'output' });
@@ -253,13 +277,13 @@ function registerComfyIpc(app, getWin) {
 
       const dir = readSettings().sdImageDir;
       fs.mkdirSync(dir, { recursive: true });
-      const ext = (pick.filename.split('.').pop() || 'mp4').toLowerCase();
-      const name = core.videoFileName(dir, seed, ext);
+      const ext = (pick.filename.split('.').pop() || (media === 'image' ? 'png' : 'mp4')).toLowerCase();
+      const name = core.mediaFileName(dir, seed, ext, media === 'image' ? 'img' : 'vid');
       const full = path.join(dir, name);
       fs.writeFileSync(full, bytes);
       const elapsed = (Date.now() - t0) / 1000;
-      pushLog(`[app] video saved: ${full} (${Math.round(bytes.length / 1024)} KB, ${elapsed.toFixed(1)}s)`);
-      return { ok: true, files: [{ path: full, name }], seed, elapsed };
+      pushLog(`[app] ${media} saved: ${full} (${Math.round(bytes.length / 1024)} KB, ${elapsed.toFixed(1)}s)`);
+      return { ok: true, files: [{ path: full, name }], seed, elapsed, media };
     } catch (err) {
       if (err && (err.name === 'TimeoutError' || err.name === 'AbortError')) return offline(err);
       return { ok: false, error: String(err && err.message || err).slice(0, 500) };

@@ -580,9 +580,12 @@ export default function App() {
       setCurrentTitle(t);
       stateRef.current.currentTitle = t;
     }
+    // kind is the MEDIA; genParams.backend records who made it (forge |
+    // comfy) so Regenerate replays against the right backend
+    const viaComfy = genParams && genParams.backend === 'comfy';
     setMessages([...messagesRef.current, {
-      uid: newUid(), role: 'assistant', who: 'Stable Diffusion',
-      content: `[SD image: ${prompt}]` + (seed != null ? ` (seed ${seed})` : ''),
+      uid: newUid(), role: 'assistant', who: viaComfy ? 'ComfyUI' : 'Stable Diffusion',
+      content: `[${viaComfy ? 'image' : 'SD image'}: ${prompt}]` + (seed != null ? ` (seed ${seed})` : ''),
       imagePath: path, kind: 'image', genParams
     }]);
     await persistConvo(messagesRef.current);
@@ -604,18 +607,18 @@ export default function App() {
   }
 
   // image/video message actions route to the generation panel, never to
-  // OpenRouter. The panel mounts lazily and the video half mounts on backend
-  // switch, so: open, request the backend, retry until the needed control
-  // function registers.
+  // OpenRouter. The panel mounts lazily and the ComfyUI/Forge bodies mount on
+  // target switch, so: open, request the target, retry until the needed
+  // control function registers.
   const sdControlRef = useRef(null);
-  const withSdControl = (backendName, fnName, call) => {
+  const withSdControl = (target, fnName, call) => {
     setSdMounted(true); setSdOpen(true);
     let switched = false;
     const attempt = (n) => {
       const c = sdControlRef.current;
-      if (c && c.showBackend && !switched) { switched = true; c.showBackend(backendName); }
-      // video functions exist only while the video body is mounted, so their
-      // presence doubles as "the right backend is showing"
+      if (c && c.showTarget && !switched) { switched = true; c.showTarget(target); }
+      // body-specific functions exist only while that body is mounted, so
+      // their presence doubles as "the right body is showing"
       if (c && typeof c[fnName] === 'function') { call(c); return; }
       if (n < 40) setTimeout(() => attempt(n + 1), 50);
     };
@@ -623,17 +626,27 @@ export default function App() {
   };
   function onImageAction(m, action) {
     if (!m) return;
-    if (m.kind === 'video') {
-      if (action === 'regenerate') withSdControl('video', 'regenerateVideo', c => c.regenerateVideo(m.genParams));
-      else if (action === 'reuse-seed') withSdControl('video', 'regenerateVideo', c => c.regenerateVideo(m.genParams, { keepSeed: true }));
-      else if (action === 'reuse-settings') withSdControl('video', 'loadVideoSettings', c => c.loadVideoSettings(m.genParams));
+    const gp = m.genParams;
+    // kind is the media; the producing backend decides where replays go.
+    // Messages saved before `backend` existed: video was always ComfyUI,
+    // images were always Forge.
+    const viaComfy = m.kind === 'video' || (gp && gp.backend === 'comfy');
+    if (viaComfy && (action === 'regenerate' || action === 'reuse-seed' || action === 'reuse-settings')) {
+      const target = m.kind === 'video' ? { media: 'video' }
+        : { media: 'image', backend: 'comfy', workflow: gp && gp.workflow };
+      if (action === 'regenerate') withSdControl(target, 'comfyRegenerate', c => c.comfyRegenerate(gp));
+      else if (action === 'reuse-seed') withSdControl(target, 'comfyRegenerate', c => c.comfyRegenerate(gp, { keepSeed: true }));
+      else withSdControl(target, 'comfyLoadSettings', c => c.comfyLoadSettings(gp));
       return;
     }
-    if (action === 'regenerate') withSdControl('image', 'regenerate', c => c.regenerate(m.genParams));
-    else if (action === 'reuse-seed') withSdControl('image', 'regenerate', c => c.regenerate(m.genParams, { keepSeed: true }));
-    else if (action === 'reuse-settings') withSdControl('image', 'loadSettings', c => c.loadSettings(m.genParams));
-    else if (action === 'img2img') withSdControl('image', 'sendImage', c => c.sendImage(m.imagePath, 'img2img'));
-    else if (action === 'inpaint') withSdControl('image', 'sendImage', c => c.sendImage(m.imagePath, 'inpaint'));
+    if (m.kind === 'video') return;
+    const forge = { media: 'image', backend: 'forge' };
+    if (action === 'regenerate') withSdControl(forge, 'regenerate', c => c.regenerate(gp));
+    else if (action === 'reuse-seed') withSdControl(forge, 'regenerate', c => c.regenerate(gp, { keepSeed: true }));
+    else if (action === 'reuse-settings') withSdControl(forge, 'loadSettings', c => c.loadSettings(gp));
+    // img2img / inpaint always go to Forge — any image is just a pixel source
+    else if (action === 'img2img') withSdControl(forge, 'sendImage', c => c.sendImage(m.imagePath, 'img2img'));
+    else if (action === 'inpaint') withSdControl(forge, 'sendImage', c => c.sendImage(m.imagePath, 'inpaint'));
   }
 
   // images already in this conversation, offered as img2img sources

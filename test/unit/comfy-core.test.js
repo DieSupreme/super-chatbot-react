@@ -57,6 +57,48 @@ test('listWorkflows: pairs only, sorted by label, malformed manifests skipped', 
   assert.deepEqual(core.listWorkflows(path.join(dir, 'nope')), []);
 });
 
+test('listWorkflows: media is image when declared, video otherwise (pre-media manifests)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wf-'));
+  fs.writeFileSync(path.join(dir, 'pic.json'), '{}');
+  fs.writeFileSync(path.join(dir, 'pic.manifest.json'), JSON.stringify({ label: 'Pic', media: 'image', controls: {} }));
+  fs.writeFileSync(path.join(dir, 'clip.json'), '{}');
+  fs.writeFileSync(path.join(dir, 'clip.manifest.json'), JSON.stringify({ label: 'Clip', controls: {} }));
+  const byName = Object.fromEntries(core.listWorkflows(dir).map(w => [w.name, w.media]));
+  assert.equal(byName.pic, 'image');
+  assert.equal(byName.clip, 'video');       // backwards compat: no field -> video
+  assert.equal(core.workflowMedia({ media: 'nonsense' }), 'video');
+});
+
+test('patchWorkflow: readonly controls always patch the manifest default, ignoring the value', () => {
+  const graph = { '1': { class_type: 'KSampler', inputs: { cfg: 1 } } };
+  const manifest = { controls: { cfg: { node: '1', input: 'cfg', type: 'readonly', default: 1.0, min: 1.0, max: 1.0 } } };
+  assert.equal(core.patchWorkflow(graph, manifest, { cfg: 7 })['1'].inputs.cfg, 1);
+  assert.equal(core.patchWorkflow(graph, manifest, {})['1'].inputs.cfg, 1);
+});
+
+test('patchWorkflow: checkbox booleans and select strings pass through untouched', () => {
+  const graph = { '1': { class_type: 'X', inputs: { add_noise: true, sampler_name: 'euler' } } };
+  const manifest = { controls: {
+    noise: { node: '1', input: 'add_noise', type: 'checkbox' },
+    sampler: { node: '1', input: 'sampler_name', type: 'select' }
+  } };
+  const out = core.patchWorkflow(graph, manifest, { noise: false, sampler: 'dpmpp_2m' });
+  assert.equal(out['1'].inputs.add_noise, false);
+  assert.equal(out['1'].inputs.sampler_name, 'dpmpp_2m');
+});
+
+test('objectInfoOptions: extracts combo options from /object_info, [] when absent', () => {
+  const info = { KSampler: { input: {
+    required: { sampler_name: [['euler', 'dpmpp_2m'], {}], steps: ['INT', { default: 20 }] },
+    optional: { extra: [['a', 'b']] }
+  } } };
+  assert.deepEqual(core.objectInfoOptions(info, 'KSampler', 'sampler_name'), ['euler', 'dpmpp_2m']);
+  assert.deepEqual(core.objectInfoOptions(info, 'KSampler', 'extra'), ['a', 'b']);
+  assert.deepEqual(core.objectInfoOptions(info, 'KSampler', 'steps'), []);      // INT, not a combo
+  assert.deepEqual(core.objectInfoOptions(info, 'Nope', 'x'), []);
+  assert.deepEqual(core.objectInfoOptions(null, 'KSampler', 'x'), []);
+});
+
 test('videoFileName: stamped, seed-suffixed, collision-suffixed', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vid-'));
   const now = new Date(2026, 6, 14, 3, 4, 5);
@@ -64,6 +106,8 @@ test('videoFileName: stamped, seed-suffixed, collision-suffixed', () => {
   assert.equal(a, 'vid-20260714-030405-42.mp4');
   fs.writeFileSync(path.join(dir, a), '');
   assert.equal(core.videoFileName(dir, 42, 'mp4', now), 'vid-20260714-030405-42-2.mp4');
+  // image workflows get img-*, keeping sd-* for Forge and vid-* for video
+  assert.equal(core.mediaFileName(dir, 42, 'png', 'img', now), 'img-20260714-030405-42.png');
 });
 
 test('detectComfyLayout: portable vs clone', () => {

@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import api from '../api.js';
 import { reconcileCheckpoints, loraTag, snapDim, clampParam, parseInfotext } from '../sd-utils.js';
 import SdMaskCanvas from './SdMaskCanvas.jsx';
-import VideoBody from './VideoPanel.jsx';
+import ComfyBody from './VideoPanel.jsx';
 import SCHEMA from '../sd-schema.json';
 import SD_DEFAULTS from '../sd-defaults.json';
 
@@ -104,10 +104,16 @@ function NumRow({ label, value, meta, onChange, allowNull, title }) {
 }
 
 export default function SdPanel({ open, onToast, onImage, onVideo, convoImages, controlRef }) {
-  // which backend the panel drives: 'image' (Forge) or 'video' (ComfyUI).
-  // They never run simultaneously — main enforces it; the toggle states it.
-  const [backend, setBackend] = useState('image');
-  const [videoBusy, setVideoBusy] = useState(false);
+  // media and backend are SEPARATE axes. The toggle picks the media
+  // ('image' | 'video'); the model/workflow picked below decides the backend
+  // (Forge or ComfyUI) — the user never chooses a backend directly. In image
+  // mode one unified list holds Forge checkpoints AND ComfyUI image
+  // workflows; imageWf = '' means a Forge checkpoint is selected. The
+  // backends still never run simultaneously — main's gpu-lock enforces it.
+  const [media, setMedia] = useState('image');
+  const [imageWf, setImageWf] = useState('');            // '' = Forge, else ComfyUI workflow name
+  const [comfyImageWfs, setComfyImageWfs] = useState([]);
+  const [comfyBusy, setComfyBusy] = useState(false);
   const [status, setStatus] = useState('stopped');
   const [statusMsg, setStatusMsg] = useState('');
   const [url, setUrl] = useState('');
@@ -181,10 +187,12 @@ export default function SdPanel({ open, onToast, onImage, onVideo, convoImages, 
         setStatus(r.status); setUrl(r.url); setManaged(!!r.managed);
         if (r.log && r.log.length) setLogLines(r.log);
       }
-      const [disk, loraR, vaeR, settingsR] = await Promise.all([
-        api.sd.scanCheckpoints(), api.sd.scanLoras(), api.sd.scanVae(), api.getSettings()
+      const [disk, loraR, vaeR, settingsR, wfR] = await Promise.all([
+        api.sd.scanCheckpoints(), api.sd.scanLoras(), api.sd.scanVae(), api.getSettings(),
+        api.comfy.workflows()
       ]);
       const diskList = disk && disk.ok ? disk.list : [];
+      if (wfR && wfR.ok) setComfyImageWfs(wfR.list.filter(w => (w.media || 'video') === 'image'));
       if (loraR && loraR.ok) setLoras(loraR.list);
       if (vaeR && vaeR.ok) setVaes(vaeR.list);
       if (settingsR && settingsR.ok) {
@@ -487,7 +495,8 @@ export default function SdPanel({ open, onToast, onImage, onVideo, convoImages, 
       }
       setLastSeed(r.seed);
       const { initB64, ...replayable } = payload;
-      const genParams = { ...replayable, seed: r.seed, mode: genMode };
+      // backend rides along so Regenerate replays against Forge, not ComfyUI
+      const genParams = { ...replayable, seed: r.seed, mode: genMode, backend: 'forge' };
       for (const f of r.files) onImage({ path: f.path, name: f.name, prompt: promptText, seed: r.seed, mode: genMode, genParams });
     } catch (err) {
       setLastError(String(err && err.message || err).slice(0, 300));
@@ -532,19 +541,36 @@ export default function SdPanel({ open, onToast, onImage, onVideo, convoImages, 
     applyParams(pr, gp.override_settings && gp.override_settings.sd_model_checkpoint);
   };
   // switching modes mid-generation would orphan the progress UI — refuse
-  const switchBackend = (b) => {
-    if (b === backend) return;
-    if (busy || videoBusy) { onToast('A generation is running — stop it before switching modes', 'warn'); return; }
-    setBackend(b);
+  const switchMedia = (m) => {
+    if (m === media) return false;
+    if (busy || comfyBusy) { onToast('A generation is running — stop it before switching modes', 'warn'); return false; }
+    setMedia(m);
+    return true;
+  };
+  // unified image list: 'forge:<checkpoint>' routes to Forge,
+  // 'comfy:<workflow>' routes to ComfyUI — the app picks the backend
+  const pickImageModel = (v) => {
+    if (busy || comfyBusy) { onToast('A generation is running — stop it before switching models', 'warn'); return; }
+    if (v.startsWith('comfy:')) setImageWf(v.slice(6));
+    else { setImageWf(''); setCurrentCkpt(v.slice(6)); }
   };
 
   useEffect(() => {
     if (!controlRef) return;
-    // MERGE onto the shared control surface — VideoBody adds its video
-    // functions to the same object when the video backend is mounted
+    // MERGE onto the shared control surface — ComfyBody adds its replay
+    // functions to the same object while a ComfyUI body is mounted
     controlRef.current = {
       ...(controlRef.current || {}),
-      showBackend: switchBackend,
+      // chat-side routing target: { media, backend?, workflow? } — regenerate
+      // on a stored message steers the panel to the body that produced it
+      showTarget: (t) => {
+        if (!t || !t.media) return;
+        if (t.media !== media && !switchMedia(t.media)) return;
+        if (t.media === 'image') {
+          if (t.backend === 'comfy' && t.workflow) setImageWf(t.workflow);
+          else if (t.backend === 'forge') setImageWf('');
+        }
+      },
       // kind:'image' Regenerate — replay the stored params (seed -1 unless kept)
       regenerate: (gp, opts = {}) => {
         if (!gp) { onToast('This image has no stored settings to replay', 'warn'); return; }
@@ -592,16 +618,42 @@ export default function SdPanel({ open, onToast, onImage, onVideo, convoImages, 
   return (
     <aside className={'sd-panel' + (open ? ' open' : '')}
       onDrop={onPanelDrop} onDragOver={e => { e.preventDefault(); }}>
-      {/* backend mode toggle — one GPU, one backend at a time */}
-      <div className="sd-tabs sd-backend" title="Forge and ComfyUI never run together — starting one stops the other">
-        <button className={'sd-tab' + (backend === 'image' ? ' active' : '')}
-          onClick={() => switchBackend('image')}>Image · Forge</button>
-        <button className={'sd-tab' + (backend === 'video' ? ' active' : '')}
-          onClick={() => switchBackend('video')}>Video · ComfyUI</button>
+      {/* media toggle — what to make, not which backend; the model picked
+          below decides Forge vs ComfyUI (one GPU, one backend at a time) */}
+      <div className="sd-tabs sd-backend" title="Pick what to make — the model choice decides the backend. Forge and ComfyUI never run together.">
+        <button className={'sd-tab' + (media === 'image' ? ' active' : '')}
+          onClick={() => switchMedia('image')}>Image</button>
+        <button className={'sd-tab' + (media === 'video' ? ' active' : '')}
+          onClick={() => switchMedia('video')}>Video</button>
       </div>
 
-      {backend === 'video' ? (
-        <VideoBody onToast={onToast} onVideo={onVideo} controlRef={controlRef} onBusyChange={setVideoBusy} />
+      {/* image mode: ONE list — Forge checkpoints and ComfyUI image
+          workflows together; picking an entry routes to its backend */}
+      {media === 'image' && (
+        <label className="sd-row sd-model-row"
+          title="Checkpoints generate on Forge; workflows generate on ComfyUI — starting one backend stops the other">Model
+          <select value={imageWf ? 'comfy:' + imageWf : 'forge:' + currentCkpt}
+            onChange={e => pickImageModel(e.target.value)}>
+            {!imageWf && !checkpoints.some(c => c.value === currentCkpt) &&
+              <option value={'forge:' + currentCkpt}>(select a model…)</option>}
+            <optgroup label="Checkpoints — Forge">
+              {checkpoints.map(c => <option key={c.value} value={'forge:' + c.value}>{c.label}</option>)}
+            </optgroup>
+            {comfyImageWfs.length > 0 && (
+              <optgroup label="Workflows — ComfyUI">
+                {comfyImageWfs.map(w => <option key={w.name} value={'comfy:' + w.name}>{w.label}</option>)}
+              </optgroup>
+            )}
+          </select>
+        </label>
+      )}
+
+      {media === 'video' ? (
+        <ComfyBody media="video" onToast={onToast} onImage={onImage} onVideo={onVideo}
+          controlRef={controlRef} onBusyChange={setComfyBusy} />
+      ) : imageWf ? (
+        <ComfyBody media="image" workflow={imageWf} onToast={onToast} onImage={onImage} onVideo={onVideo}
+          controlRef={controlRef} onBusyChange={setComfyBusy} />
       ) : (<>
       <div className="sd-head">
         <h3>Stable Diffusion</h3>

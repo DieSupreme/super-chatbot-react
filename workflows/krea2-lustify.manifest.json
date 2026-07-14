@@ -1,0 +1,18 @@
+{
+  "label": "Krea2 — LUSTIFY",
+  "backend": "comfy",
+  "media": "image",
+  "controls": {
+    "prompt":    { "node": "198", "input": "text", "type": "textarea", "group": "Basic" },
+    "seed":      { "node": "201", "input": "seed", "type": "seed", "group": "Basic" },
+    "width":     { "node": "200", "input": "width",  "type": "int", "default": 1024, "min": 256, "max": 2048, "step": 16, "group": "Basic" },
+    "height":    { "node": "200", "input": "height", "type": "int", "default": 1024, "min": 256, "max": 2048, "step": 16, "group": "Basic" },
+    "steps":     { "node": "201", "input": "steps", "type": "int", "default": 8, "min": 1, "max": 50, "group": "Sampling" },
+    "cfg":       { "node": "201", "input": "cfg", "type": "readonly", "default": 1.0, "min": 1.0, "max": 1.0, "group": "Sampling",
+                   "tooltip": "Locked at 1.0 — Krea2 is distilled; any other CFG produces garbage" },
+    "sampler":   { "node": "201", "input": "sampler_name", "type": "select", "default": "euler",
+                   "options_from": "object_info:KSampler:sampler_name", "group": "Sampling" },
+    "scheduler": { "node": "201", "input": "scheduler", "type": "select", "default": "simple",
+                   "options_from": "object_info:KSampler:scheduler", "group": "Sampling" }
+  }
+}

@@ -96,12 +96,14 @@ contextBridge.exposeInMainWorld('api', {
       return () => ipcRenderer.removeListener('sd:status', h);
     }
   },
-  // ComfyUI video backend — all HTTP and the progress WebSocket live in main
+  // ComfyUI backend (image + video workflows) — all HTTP and the progress
+  // WebSocket live in main
   comfy: {
     status: () => ipcRenderer.invoke('comfy:status'),
     start: () => ipcRenderer.invoke('comfy:start'),
     stop: () => ipcRenderer.invoke('comfy:stop'),
     workflows: () => ipcRenderer.invoke('comfy:workflows'),
+    objectInfo: (nodeType, input) => ipcRenderer.invoke('comfy:objectInfo', { nodeType, input }),
     generate: (p) => ipcRenderer.invoke('comfy:generate', p),
     interrupt: () => ipcRenderer.invoke('comfy:interrupt'),
     readVideo: (p) => ipcRenderer.invoke('comfy:readVideo', p),

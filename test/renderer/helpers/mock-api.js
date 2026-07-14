@@ -86,6 +86,7 @@ export function createMockApi() {
       workflows: async () => ({
         ok: true,
         list: [{
+          // no `media` field — exercises the pre-media default of 'video'
           name: 'smoke-test', label: 'Smoke test — solid-color clip (no model needed)',
           controls: {
             prompt: { node: '9', input: 'text', type: 'text' },
@@ -94,10 +95,30 @@ export function createMockApi() {
             fps: { node: '2', input: 'fps', type: 'float', default: 12, min: 1, max: 60 },
             seed: { node: '3', input: 'noise_seed', type: 'seed' }
           }
+        }, {
+          name: 'krea-image', label: 'Krea2 — LUSTIFY', media: 'image',
+          controls: {
+            prompt: { node: '198', input: 'text', type: 'textarea' },
+            seed: { node: '201', input: 'seed', type: 'seed' },
+            steps: { node: '201', input: 'steps', type: 'int', default: 8, min: 1, max: 50, group: 'Sampling' },
+            cfg: { node: '201', input: 'cfg', type: 'readonly', default: 1.0, min: 1.0, max: 1.0, group: 'Sampling',
+                   tooltip: 'Locked at 1.0 — distilled model' },
+            sampler: { node: '201', input: 'sampler_name', type: 'select', default: 'euler',
+                       options_from: 'object_info:KSampler:sampler_name', group: 'Sampling' },
+            width: { node: '200', input: 'width', type: 'int', default: 1024, min: 256, max: 2048 },
+            height: { node: '200', input: 'height', type: 'int', default: 1024, min: 256, max: 2048 }
+          }
         }]
       }),
+      objectInfo: async (nodeType, input) => {
+        calls.push(['comfy:objectInfo', nodeType, input]);
+        return { ok: true, options: ['euler', 'euler_ancestral', 'dpmpp_2m'] };
+      },
       generate: async (p) => {
         calls.push(['comfy:generate', p]);
+        if (p.workflow === 'krea-image') {
+          return { ok: true, files: [{ path: 'D:\\Devlopment\\AI\\IMG\\img-1.png', name: 'img-1.png' }], seed: 77, elapsed: 1.1, media: 'image' };
+        }
         return { ok: true, files: [{ path: 'D:\\Devlopment\\AI\\IMG\\vid-1.mp4', name: 'vid-1.mp4' }], seed: 99, elapsed: 3.2 };
       },
       interrupt: async () => ({ ok: true }),

@@ -60,7 +60,9 @@ describe('attachments: paste and drag-drop overlay', () => {
     render(<App />);
     await waitFor(() => screen.getByText(/Key ✓/));
     fireEvent.click(screen.getByText('🎨 SD'));
-    fireEvent.click(await screen.findByRole('button', { name: 'Image' }));
+    // the Forge img2img tab — NOT the top-level Image/Video media toggle
+    const tabs = await screen.findAllByRole('button', { name: 'Image' });
+    fireEvent.click(tabs.find(b => !b.closest('.sd-backend')));
     fireEvent.paste(document.body, { clipboardData: imageClipboard() });
     // the panel claims the paste (capture phase); the chat attach bar must stay empty
     await new Promise(r => setTimeout(r, 80));

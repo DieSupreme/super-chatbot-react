@@ -38,7 +38,12 @@ function spawnComfy(root, port) {
 // ---------- workflows are data ----------
 // A workflow is a PAIR in workflowsDir: <name>.json (ComfyUI API format) and
 // <name>.manifest.json (control -> node/input mapping). Adding a model is a
-// data drop, never a code change.
+// data drop, never a code change. `media` says what the workflow produces
+// ('image' | 'video'); manifests written before the field existed are video.
+function workflowMedia(manifest) {
+  return manifest && manifest.media === 'image' ? 'image' : 'video';
+}
+
 function listWorkflows(dir) {
   let entries = [];
   try { entries = fs.readdirSync(dir); } catch (_) { return []; }
@@ -50,7 +55,7 @@ function listWorkflows(dir) {
     if (!fs.existsSync(graphFile)) continue;
     try {
       const manifest = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
-      out.push({ name, label: manifest.label || name, controls: manifest.controls || {} });
+      out.push({ name, label: manifest.label || name, media: workflowMedia(manifest), controls: manifest.controls || {} });
     } catch (_) { /* malformed manifest -> skipped, surfaced by absence */ }
   }
   return out.sort((a, b) => a.label.localeCompare(b.label));
@@ -64,10 +69,12 @@ function loadWorkflow(dir, name) {
 
 // Patch ONLY manifest-mapped inputs into a deep copy of the graph. A control
 // is either { node, input } or { targets: [{ node, input }, ...] }.
+// Readonly controls always patch their manifest default — the value is a
+// model constraint (e.g. a distilled checkpoint's locked cfg), not a choice.
 function patchWorkflow(graph, manifest, values) {
   const out = JSON.parse(JSON.stringify(graph));
   for (const [key, ctl] of Object.entries(manifest.controls || {})) {
-    let v = values[key];
+    let v = ctl.type === 'readonly' && ctl.default != null ? ctl.default : values[key];
     if (v === undefined || v === null || v === '') continue;
     if (typeof v === 'number') {
       if (!Number.isFinite(v)) continue;
@@ -86,15 +93,31 @@ function patchWorkflow(graph, manifest, values) {
 }
 
 // ---------- output naming ----------
-// vid-YYYYMMDD-HHMMSS-<seed>.<ext>, suffixed -2, -3… on collision — the same
-// convention as sd-core.imageFileName.
-function videoFileName(dir, seed, ext = 'mp4', now = new Date()) {
+// <prefix>-YYYYMMDD-HHMMSS-<seed>.<ext>, suffixed -2, -3… on collision — the
+// same convention as sd-core.imageFileName. vid-* for video workflows,
+// img-* for ComfyUI image workflows (sd-* stays Forge's).
+function mediaFileName(dir, seed, ext, prefix, now = new Date()) {
   const p2 = (n) => String(n).padStart(2, '0');
   const stamp = `${now.getFullYear()}${p2(now.getMonth() + 1)}${p2(now.getDate())}-${p2(now.getHours())}${p2(now.getMinutes())}${p2(now.getSeconds())}`;
-  const baseName = `vid-${stamp}-${seed != null ? seed : 'x'}`;
+  const baseName = `${prefix}-${stamp}-${seed != null ? seed : 'x'}`;
   let name = `${baseName}.${ext}`, i = 1;
   while (fs.existsSync(path.join(dir, name))) name = `${baseName}-${++i}.${ext}`;
   return name;
+}
+function videoFileName(dir, seed, ext = 'mp4', now = new Date()) {
+  return mediaFileName(dir, seed, ext, 'vid', now);
+}
+
+// ---------- /object_info dropdowns ----------
+// A manifest select can declare "options_from": "object_info:<NodeType>:<input>"
+// to populate live from ComfyUI (samplers, schedulers, model files) instead of
+// hardcoding lists. This extracts the options array from a /object_info/<Type>
+// response: combo inputs are [[...options], {meta}] under input.required/optional.
+function objectInfoOptions(info, nodeType, input) {
+  const node = info && info[nodeType];
+  const inputs = (node && node.input) || {};
+  const def = (inputs.required && inputs.required[input]) || (inputs.optional && inputs.optional[input]);
+  return Array.isArray(def) && Array.isArray(def[0]) ? def[0].map(String) : [];
 }
 
 // ---------- WebSocket client ----------
@@ -202,6 +225,7 @@ function openManualWs(url, { onMessage, onClose } = {}) {
 
 module.exports = {
   detectComfyLayout, spawnComfy,
-  listWorkflows, loadWorkflow, patchWorkflow,
-  videoFileName, openWs, openNativeWs, openManualWs
+  listWorkflows, loadWorkflow, patchWorkflow, workflowMedia,
+  mediaFileName, videoFileName, objectInfoOptions,
+  openWs, openNativeWs, openManualWs
 };
