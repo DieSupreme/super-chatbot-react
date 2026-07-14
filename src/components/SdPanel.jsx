@@ -568,9 +568,38 @@ export default function SdPanel({ open, onToast, onImage, convoImages }) {
             placeholder="what to avoid (optional)" />
         </label>
 
+        {/* prompt cluster: everything that edits the prompt sits next to it */}
+        {lists.styles.length > 0 && (
+          <label className="sd-row">Styles <span className="sd-hint">(ctrl-click for several)</span>
+            <select multiple size={3} value={xp.styles}
+              onChange={e => setP('styles', Array.from(e.target.selectedOptions).map(o => o.value))}>
+              {lists.styles.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </label>
+        )}
+
+        <details className="sd-loras" open={lorasOpen} onToggle={e => setLorasOpen(e.currentTarget.open)}>
+          <summary>LoRAs ({loras.length})</summary>
+          {!loras.length
+            ? <div className="sd-hint sd-loras-empty">none found in models\Lora</div>
+            : <>
+                <label className="sd-row">Weight <span className="set-val">{loraWeight.toFixed(2)}</span>
+                  <input type="range" min="-1" max="2" step="0.05" value={loraWeight}
+                    onChange={e => setLoraWeight(parseFloat(e.target.value))} />
+                </label>
+                <div className="sd-lora-list">
+                  {loras.map(l => (
+                    <button key={l.rel} className="ghost sd-mini" title={'insert ' + loraTag(l.name, loraWeight)}
+                      onClick={() => insertLora(l.name)}>{l.name}</button>
+                  ))}
+                </div>
+              </>}
+        </details>
+
+        <div className="sd-group">Model</div>
         <label className="sd-row">Checkpoint
-          <span style={{ display: 'flex', gap: '6px' }}>
-            <select style={{ flex: 1 }} value={currentCkpt} onChange={e => setCurrentCkpt(e.target.value)}
+          <span className="sd-ckpt-row">
+            <select value={currentCkpt} onChange={e => setCurrentCkpt(e.target.value)}
               title="Sent per-request via override_settings — no global switch">
               {!checkpoints.length && <option value="">(no checkpoints found)</option>}
               {checkpoints.length > 0 && !checkpoints.some(c => c.value === currentCkpt) &&
@@ -585,7 +614,22 @@ export default function SdPanel({ open, onToast, onImage, convoImages }) {
               title="Rescan checkpoints / VAEs / LoRAs without restarting Forge">🔄</button>
           </span>
         </label>
+        <div className="sd-grid">
+          <label className="sd-row">Sampler
+            <select value={sampler} onChange={e => setSampler(e.target.value)}>
+              <option value="">(model default)</option>
+              {samplers.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </label>
+          <label className="sd-row">Scheduler
+            <select value={xp.scheduler} onChange={e => setP('scheduler', e.target.value)}>
+              {!lists.schedulers.length && <option value="automatic">Automatic</option>}
+              {lists.schedulers.map(s => <option key={s.name} value={s.name}>{s.label || s.name}</option>)}
+            </select>
+          </label>
+        </div>
 
+        <div className="sd-group">Sampling</div>
         <div className="sd-grid">
           <label className="sd-row">Steps <span className="set-val">{steps}</span>
             <input type="range" min={T.steps.min} max={T.steps.max} value={steps}
@@ -603,18 +647,6 @@ export default function SdPanel({ open, onToast, onImage, convoImages }) {
             <input type="number" step={T.height.step} min={T.height.min} max={T.height.max} value={height}
               onChange={e => setHeight(parseInt(e.target.value) || T.height.def)} onBlur={e => setHeight(snapDim(e.target.value))} />
           </label>
-          <label className="sd-row">Sampler
-            <select value={sampler} onChange={e => setSampler(e.target.value)}>
-              <option value="">(model default)</option>
-              {samplers.map(s => <option key={s} value={s}>{s}</option>)}
-            </select>
-          </label>
-          <label className="sd-row">Scheduler
-            <select value={xp.scheduler} onChange={e => setP('scheduler', e.target.value)}>
-              {!lists.schedulers.length && <option value="automatic">Automatic</option>}
-              {lists.schedulers.map(s => <option key={s.name} value={s.name}>{s.label || s.name}</option>)}
-            </select>
-          </label>
           <label className="sd-row">Seed
             <input type="number" value={seed} onChange={e => setSeed(parseInt(e.target.value) || 0)}
               title="-1 = random" />
@@ -623,15 +655,6 @@ export default function SdPanel({ open, onToast, onImage, convoImages }) {
           <NumRow label="Batch count" value={xp.n_iter} meta={T.n_iter} onChange={v => setP('n_iter', v)}
             title="n_iter: sequential batches" />
         </div>
-
-        {lists.styles.length > 0 && (
-          <label className="sd-row">Styles <span className="sd-hint">(ctrl-click for several)</span>
-            <select multiple size={3} value={xp.styles}
-              onChange={e => setP('styles', Array.from(e.target.selectedOptions).map(o => o.value))}>
-              {lists.styles.map(s => <option key={s} value={s}>{s}</option>)}
-            </select>
-          </label>
-        )}
 
         {sourceModes && (
           <label className="sd-row">Denoising strength <span className="set-val">{denoise.toFixed(2)}</span>
@@ -801,24 +824,6 @@ export default function SdPanel({ open, onToast, onImage, convoImages }) {
             </>}
           </Section>
         )}
-
-        <details className="sd-loras" open={lorasOpen} onToggle={e => setLorasOpen(e.currentTarget.open)}>
-          <summary>LoRAs ({loras.length})</summary>
-          {!loras.length
-            ? <div className="sd-hint" style={{ padding: '4px 0' }}>none found in models\Lora</div>
-            : <>
-                <label className="sd-row">Weight <span className="set-val">{loraWeight.toFixed(2)}</span>
-                  <input type="range" min="-1" max="2" step="0.05" value={loraWeight}
-                    onChange={e => setLoraWeight(parseFloat(e.target.value))} />
-                </label>
-                <div className="sd-lora-list">
-                  {loras.map(l => (
-                    <button key={l.rel} className="ghost sd-mini" title={'insert ' + loraTag(l.name, loraWeight)}
-                      onClick={() => insertLora(l.name)}>{l.name}</button>
-                  ))}
-                </div>
-              </>}
-        </details>
 
         <div className="sd-pnginfo" title="Reads the parameters Forge embeds in its PNGs">
           ⤵ Drop a Forge PNG anywhere on this panel to import its settings

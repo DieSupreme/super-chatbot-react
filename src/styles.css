@@ -376,6 +376,8 @@ footer { display:flex; padding:12px 16px; background:var(--bg-1); border-top:1px
 /* ================= local Stable Diffusion panel ================= */
 .sd-head { display:flex; align-items:center; gap:8px; padding:12px 14px; border-bottom:1px solid var(--line); flex-shrink:0; }
 .sd-head h3 { margin:0; font-size:14px; flex:1; }
+/* Stop Forge kills the process — warn before the click, like Quit all */
+.sd-head .sd-mini:hover { color:var(--warn); border-color:var(--warn); background:transparent; }
 /* status pill with an LED dot — the panel's state at a glance */
 .sd-pill { display:inline-flex; align-items:center; gap:6px; font-size:var(--fs-0); padding:3px 10px;
   border-radius:var(--r-pill); border:1px solid var(--line); color:var(--text-2); white-space:nowrap; }
@@ -396,6 +398,13 @@ footer { display:flex; padding:12px 16px; background:var(--bg-1); border-top:1px
   border-radius:var(--r-1); padding:6px 0; font-size:var(--fs-1); font-weight:500; cursor:pointer; }
 .sd-tab:hover { filter:none; color:var(--text); border-color:var(--line-2); }
 .sd-tab.active { color:var(--hi); border-color:var(--hi); background:var(--bg-3); }
+/* non-collapsible group eyebrows inside the Basic column (Model / Sampling) */
+.sd-group { font-size:10px; color:var(--text-3); text-transform:uppercase; letter-spacing:1.2px;
+  font-weight:600; margin:14px 0 8px; padding-top:10px; border-top:1px solid var(--line); }
+.sd-ckpt-row { display:flex; gap:6px; }
+.sd-ckpt-row select { flex:1; min-width:0; }
+.sd-loras-empty { display:block; padding:4px 0; }
+.sd-row select[multiple] { min-height:60px; }
 .sd-row { display:flex; flex-direction:column; gap:5px; font-size:var(--fs-1); color:var(--text-2); margin-bottom:12px; }
 .sd-row textarea, .sd-row input[type=number], .sd-row select, .set-text {
   padding:7px 9px; font-size:var(--fs-1); width:100%; resize:vertical; user-select:text; }
