@@ -108,6 +108,121 @@ function videoFileName(dir, seed, ext = 'mp4', now = new Date()) {
   return mediaFileName(dir, seed, ext, 'vid', now);
 }
 
+// ---------- UI-graph -> API-format conversion ----------
+// ComfyUI's default Ctrl+S export is the UI/graph format (nodes[] + links[]),
+// not the API format /prompt expects. Rather than force users to re-export
+// with "Save (API format)", convert at generate time. Widget values in the
+// graph are a POSITIONAL array; /object_info supplies the input-name order,
+// so conversion needs a running server (which generation implies anyway).
+const UI_NOTE_TYPES = new Set(['Note', 'MarkdownNote', 'PrimitiveNote']);
+
+function isUiGraph(graph) {
+  return !!graph && Array.isArray(graph.nodes);
+}
+
+// active = executed by ComfyUI: not a note, not muted (mode 2), not bypassed
+// (mode 4 — e.g. an optional img2img branch left greyed out in the editor)
+function uiGraphActiveNodes(graph) {
+  return (graph.nodes || []).filter(n => n && !UI_NOTE_TYPES.has(n.type) && !(n.mode === 2 || n.mode === 4));
+}
+
+function uiGraphTypes(graph) {
+  return [...new Set(uiGraphActiveNodes(graph).map(n => n.type))];
+}
+
+// info: merged /object_info responses covering every active node type.
+// Returns the id-keyed API graph ({ inputs, class_type, _meta } per node).
+function uiGraphToApi(graph, info) {
+  const active = uiGraphActiveNodes(graph);
+  const activeIds = new Set(active.map(n => n.id));
+  const byId = new Map((graph.nodes || []).map(n => [n.id, n]));
+  const linkSrc = new Map();   // link id -> [srcNodeId, srcSlot]
+  for (const l of graph.links || []) if (Array.isArray(l)) linkSrc.set(l[0], [l[1], l[2]]);
+
+  // follow a link upstream; a bypassed source node forwards its same-typed
+  // input straight through (that is what mode 4 means in the editor)
+  function resolveLink(linkId, wantType) {
+    for (let hops = 0; linkId != null && hops < 64; hops++) {
+      const src = linkSrc.get(linkId);
+      if (!src) return null;
+      const n = byId.get(src[0]);
+      if (!n) return null;
+      if (activeIds.has(n.id)) return [String(n.id), src[1]];
+      const through = (n.inputs || []).find(i => i.type === wantType && i.link != null);
+      if (!through) return null;
+      linkId = through.link;
+    }
+    return null;
+  }
+
+  const CONTROL_AFTER = ['fixed', 'increment', 'decrement', 'randomize'];
+  const out = {};
+  for (const n of active) {
+    const def = info && info[n.type];
+    if (!def) throw new Error(`workflow uses node type "${n.type}" (id ${n.id}) that this ComfyUI does not provide`);
+    const specs = { ...((def.input && def.input.required) || {}), ...((def.input && def.input.optional) || {}) };
+    const linked = new Map((n.inputs || []).map(i => [i.name, i]));
+    const wv = Array.isArray(n.widgets_values) ? n.widgets_values : [];
+    const inputs = {};
+    let w = 0;
+    for (const [name, spec] of Object.entries(specs)) {
+      const typeSpec = Array.isArray(spec) ? spec[0] : spec;
+      const opts = (Array.isArray(spec) && spec[1]) || {};
+      // combos are arrays; primitive types are widgets; anything else
+      // (MODEL, LATENT, CONDITIONING, …) is a connection
+      const isWidget = Array.isArray(typeSpec) ||
+        typeSpec === 'INT' || typeSpec === 'FLOAT' || typeSpec === 'STRING' ||
+        typeSpec === 'BOOLEAN' || typeSpec === 'COMBO';
+      const conn = linked.get(name);
+      if (isWidget) {
+        const v = wv[w++];
+        // seed-style widgets carry a hidden "control_after_generate" slot
+        if (opts.control_after_generate === true ||
+            ((name === 'seed' || name === 'noise_seed') && CONTROL_AFTER.includes(wv[w]))) w++;
+        if (conn && conn.link != null) {          // widget promoted to input
+          const src = resolveLink(conn.link, conn.type);
+          if (src) { inputs[name] = src; continue; }
+        }
+        if (v !== undefined) inputs[name] = v;
+      } else if (conn && conn.link != null) {
+        const src = resolveLink(conn.link, conn.type);
+        if (!src) throw new Error(`node ${n.id} (${n.type}) input "${name}" is wired to a bypassed or missing node`);
+        inputs[name] = src;
+      }
+    }
+    out[String(n.id)] = {
+      inputs,
+      class_type: n.type,
+      _meta: { title: n.title || (n.properties && n.properties['Node name for S&R']) || n.type }
+    };
+  }
+  return out;
+}
+
+// ---------- history output picking ----------
+// /history outputs are { nodeId: { images|gifs|…: [{filename,…}] } }. Pick
+// THE result file: manifest "output" pins the node whose files count (a
+// multi-stage pipeline saves intermediates too — those must never win), then
+// prefer the extension matching the workflow's media. Returns
+// { pick, fallback } — fallback=true means the pinned node produced nothing.
+function pickHistoryOutput(outputs, media, outputNode) {
+  let src = outputs || {};
+  const want = outputNode != null ? String(outputNode) : null;
+  const fallback = !!(want && !src[want]);
+  if (want && src[want]) src = { [want]: src[want] };
+  const produced = [];
+  for (const nodeOut of Object.values(src)) {
+    for (const arr of Object.values(nodeOut || {})) {
+      if (!Array.isArray(arr)) continue;
+      for (const item of arr) if (item && item.filename) produced.push(item);
+    }
+  }
+  const isVideo = (f) => /\.(mp4|webm|mov|avi|gif|webp)$/i.test(f.filename);
+  const isImage = (f) => /\.(png|jpe?g|webp|bmp)$/i.test(f.filename);
+  const pick = (media === 'image' ? produced.find(isImage) : produced.find(isVideo)) || produced[0] || null;
+  return { pick, fallback };
+}
+
 // ---------- /object_info dropdowns ----------
 // A manifest select can declare "options_from": "object_info:<NodeType>:<input>"
 // to populate live from ComfyUI (samplers, schedulers, model files) instead of
@@ -226,6 +341,7 @@ function openManualWs(url, { onMessage, onClose } = {}) {
 module.exports = {
   detectComfyLayout, spawnComfy,
   listWorkflows, loadWorkflow, patchWorkflow, workflowMedia,
+  isUiGraph, uiGraphTypes, uiGraphToApi, pickHistoryOutput,
   mediaFileName, videoFileName, objectInfoOptions,
   openWs, openNativeWs, openManualWs
 };

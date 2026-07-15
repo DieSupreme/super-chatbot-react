@@ -191,7 +191,23 @@ function registerComfyIpc(app, getWin) {
     const t0 = Date.now();
     let ws = null, poll = null;
     try {
-      const { graph, manifest } = core.loadWorkflow(workflowsDir, workflow);
+      let { graph, manifest } = core.loadWorkflow(workflowsDir, workflow);
+      // UI-format export (ComfyUI's default Ctrl+S)? Convert to API format
+      // using /object_info for the widget-name order — per-type, cached.
+      if (core.isUiGraph(graph)) {
+        const info = {};
+        for (const t of core.uiGraphTypes(graph)) {
+          if (/[^\w.-]/.test(t)) throw new Error(`workflow node type "${t}" has a name /object_info cannot serve`);
+          if (!objectInfoCache.has(t)) {
+            const r = await cfetch('/object_info/' + encodeURIComponent(t), { timeoutMs: 15000 });
+            if (!r.ok) throw new Error(`object_info ${t}: HTTP ${r.status}`);
+            objectInfoCache.set(t, await r.json());
+          }
+          Object.assign(info, objectInfoCache.get(t));
+        }
+        graph = core.uiGraphToApi(graph, info);
+        pushLog(`[app] UI-format workflow converted to API format (${Object.keys(graph).length} active nodes)`);
+      }
       const vals = { ...values };
       // ComfyUI has no "-1 = random" — realize the seed here and report it back
       let seed = null;
@@ -253,21 +269,12 @@ function registerComfyIpc(app, getWin) {
         }, 1500);
       });
 
-      // find the produced file(s) in the outputs, favouring the extensions
-      // that match the workflow's declared media
+      // find THE result file — the manifest can pin the SaveImage node whose
+      // files count ("output": "<node id>"); multi-stage pipelines also save
+      // intermediates and those must never win
       const media = core.workflowMedia(manifest);
-      const produced = [];
-      for (const nodeOut of Object.values(history.outputs)) {
-        for (const arr of Object.values(nodeOut)) {
-          if (!Array.isArray(arr)) continue;
-          for (const item of arr) {
-            if (item && item.filename) produced.push(item);
-          }
-        }
-      }
-      const isVideo = (f) => /\.(mp4|webm|mov|avi|gif|webp)$/i.test(f.filename);
-      const isImage = (f) => /\.(png|jpe?g|webp|bmp)$/i.test(f.filename);
-      const pick = (media === 'image' ? produced.find(isImage) : produced.find(isVideo)) || produced[0];
+      const { pick, fallback } = core.pickHistoryOutput(history.outputs, media, manifest.output);
+      if (fallback) pushLog(`[app] WARNING: manifest output node ${manifest.output} produced no files — using all outputs`);
       if (!pick) return { ok: false, error: 'workflow finished but produced no files' };
 
       const q = new URLSearchParams({ filename: pick.filename, subfolder: pick.subfolder || '', type: pick.type || 'output' });

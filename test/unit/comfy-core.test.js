@@ -124,6 +124,149 @@ test('detectComfyLayout: portable vs clone', () => {
   assert.equal(c.python, 'python');
 });
 
+// ---------- UI-graph -> API conversion ----------
+// fixture /object_info shaped like the real server's: [typeSpec, opts] per
+// input, connection inputs as bare type strings, combos as option arrays
+const OBJECT_INFO = {
+  UNETLoader: { input: { required: {
+    unet_name: [['lustifyNSFWCheckpoint_v10Krea2.safetensors'], {}], weight_dtype: [['default', 'fp8_e4m3fn'], {}]
+  } } },
+  CLIPLoader: { input: { required: {
+    clip_name: [['qwen3vl_4b_fp8_scaled.safetensors'], {}], type: [['krea2', 'sdxl'], {}]
+  }, optional: { device: [['default', 'cpu'], { advanced: true }] } } },
+  VAELoader: { input: { required: { vae_name: [['qwen_image_vae.safetensors'], {}] } } },
+  CLIPTextEncode: { input: { required: {
+    text: ['STRING', { multiline: true, dynamicPrompts: true }], clip: ['CLIP', {}]
+  } } },
+  ConditioningZeroOut: { input: { required: { conditioning: ['CONDITIONING', {}] } } },
+  EmptySD3LatentImage: { input: { required: {
+    width: ['INT', { default: 1024 }], height: ['INT', { default: 1024 }], batch_size: ['INT', { default: 1 }]
+  } } },
+  KSampler: { input: { required: {
+    model: ['MODEL', {}], seed: ['INT', { control_after_generate: true }], steps: ['INT', {}], cfg: ['FLOAT', {}],
+    sampler_name: [['euler', 'dpmpp_2m'], {}], scheduler: [['simple', 'normal'], {}],
+    positive: ['CONDITIONING', {}], negative: ['CONDITIONING', {}], latent_image: ['LATENT', {}], denoise: ['FLOAT', {}]
+  } } },
+  VAEDecode: { input: { required: { samples: ['LATENT', {}], vae: ['VAE', {}] } } },
+  VAEEncode: { input: { required: { pixels: ['IMAGE', {}], vae: ['VAE', {}] } } },
+  UpscaleModelLoader: { input: { required: { model_name: [['4x_NMKD-Siax_200k.pth'], {}] } } },
+  ImageUpscaleWithModel: { input: { required: { upscale_model: ['UPSCALE_MODEL', {}], image: ['IMAGE', {}] } } },
+  ImageScale: { input: { required: {
+    image: ['IMAGE', {}], upscale_method: [['nearest-exact', 'lanczos'], {}],
+    width: ['INT', {}], height: ['INT', {}], crop: [['disabled', 'center'], {}]
+  } } },
+  SaveImage: { input: { required: { images: ['IMAGE', {}], filename_prefix: ['STRING', { default: 'ComfyUI' }] } } },
+  LoadImage: { input: { required: { image: [['example.png'], { image_upload: true }] } } }
+};
+
+test('isUiGraph: nodes[] array marks the UI export, API format does not', () => {
+  assert.equal(core.isUiGraph({ nodes: [], links: [] }), true);
+  assert.equal(core.isUiGraph(GRAPH), false);
+  assert.equal(core.isUiGraph(null), false);
+});
+
+test('uiGraphToApi: widgets map positionally, seed skips control_after_generate, links resolve', () => {
+  const ui = {
+    nodes: [
+      { id: 1, type: 'EmptySD3LatentImage', mode: 0, inputs: [], outputs: [], widgets_values: [640, 480, 1] },
+      { id: 2, type: 'KSampler', mode: 0, widgets_values: [42, 'randomize', 8, 1, 'euler', 'simple', 0.35],
+        inputs: [{ name: 'latent_image', type: 'LATENT', link: 10 }], outputs: [] },
+      { id: 3, type: 'MarkdownNote', mode: 0, widgets_values: ['docs'] }
+    ],
+    links: [[10, 1, 0, 2, 3, 'LATENT']]
+  };
+  const api = core.uiGraphToApi(ui, OBJECT_INFO);
+  assert.deepEqual(api['1'].inputs, { width: 640, height: 480, batch_size: 1 });
+  assert.equal(api['2'].inputs.seed, 42);
+  assert.equal(api['2'].inputs.steps, 8);            // 'randomize' slot skipped
+  assert.equal(api['2'].inputs.sampler_name, 'euler');
+  assert.equal(api['2'].inputs.denoise, 0.35);
+  assert.deepEqual(api['2'].inputs.latent_image, ['1', 0]);
+  assert.equal(api['3'], undefined);                  // notes never execute
+  assert.equal(api['2'].class_type, 'KSampler');
+});
+
+test('uiGraphToApi: bypassed (mode 4) nodes drop out and links forward through them', () => {
+  const ui = {
+    nodes: [
+      { id: 1, type: 'EmptySD3LatentImage', mode: 0, inputs: [], widgets_values: [64, 64, 1] },
+      // a bypassed "adjust" node between 1 and 3 — mode 4 forwards LATENT through
+      { id: 2, type: 'VAEEncode', mode: 4, widgets_values: [],
+        inputs: [{ name: 'pixels', type: 'IMAGE', link: null }, { name: 'vae', type: 'VAE', link: null }] },
+      { id: 3, type: 'KSampler', mode: 0, widgets_values: [0, 'fixed', 4, 1, 'euler', 'simple', 1],
+        inputs: [{ name: 'latent_image', type: 'LATENT', link: 20 }] }
+    ],
+    links: [[20, 1, 0, 3, 3, 'LATENT']]
+  };
+  const api = core.uiGraphToApi(ui, OBJECT_INFO);
+  assert.equal(api['2'], undefined);
+  assert.deepEqual(api['3'].inputs.latent_image, ['1', 0]);
+});
+
+test('uiGraphToApi: unknown node type throws with the type named', () => {
+  const ui = { nodes: [{ id: 1, type: 'NotARealNode', mode: 0, inputs: [], widgets_values: [] }], links: [] };
+  assert.throws(() => core.uiGraphToApi(ui, OBJECT_INFO), /NotARealNode/);
+});
+
+test('uiGraphToApi: converts the shipped Super Duper Lustify UI export correctly', () => {
+  const ui = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'workflows', 'Super_Duper_Lustify_Final.json'), 'utf8'));
+  assert.equal(core.isUiGraph(ui), true);
+  for (const t of core.uiGraphTypes(ui)) assert.ok(OBJECT_INFO[t], `fixture object_info missing ${t}`);
+  const api = core.uiGraphToApi(ui, OBJECT_INFO);
+
+  // base sampler: denoise 1, 8 steps, latent from the size node
+  assert.equal(api['201'].inputs.steps, 8);
+  assert.equal(api['201'].inputs.denoise, 1);
+  assert.deepEqual(api['201'].inputs.latent_image, ['200', 0]);
+  // refine samplers keep their baked tuning
+  assert.equal(api['207'].inputs.denoise, 0.35);
+  assert.equal(api['210'].inputs.denoise, 0.2);
+  // prompt + size nodes
+  assert.match(api['198'].inputs.text, /PASTE YOUR PROMPT/);
+  assert.deepEqual([api['200'].inputs.width, api['200'].inputs.height], [1216, 832]);
+  // both SaveImage nodes present with their prefixes
+  assert.equal(api['203'].inputs.filename_prefix, 'krea2_final');
+  assert.equal(api['211'].inputs.filename_prefix, 'krea2_base');
+  assert.deepEqual(api['203'].inputs.images, ['208', 0]);   // final = decode of stage-3
+  assert.deepEqual(api['211'].inputs.images, ['202', 0]);   // base preview = decode of stage-1
+  // bypassed edit-mode branch and the note are gone
+  assert.equal(api['250'], undefined);
+  assert.equal(api['251'], undefined);
+  assert.equal(api['259'], undefined);
+  // upscale chain wiring survived
+  assert.deepEqual(api['204'].inputs.image, ['202', 0]);
+  assert.deepEqual(api['209'].inputs.image, ['204', 0]);
+  assert.deepEqual([api['209'].inputs.width, api['209'].inputs.height], [2432, 1664]);
+  assert.deepEqual(api['206'].inputs.pixels, ['209', 0]);
+  // the manifest's controls all point at inputs that exist post-conversion
+  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'workflows', 'Super_Duper_Lustify_Final.manifest.json'), 'utf8'));
+  const patched = core.patchWorkflow(api, manifest, { prompt: 'a test', seed: 7, width: 1216, height: 832 });
+  assert.equal(patched['198'].inputs.text, 'a test');
+  assert.equal(patched['201'].inputs.seed, 7);
+  assert.equal(patched['207'].inputs.denoise, 0.35);        // refine untouched by patch
+});
+
+test('pickHistoryOutput: manifest output node pins the result; media filters; fallback flagged', () => {
+  const outputs = {
+    '211': { images: [{ filename: 'krea2_base_00001_.png', type: 'output' }] },
+    '203': { images: [{ filename: 'krea2_final_00001_.png', type: 'output' }] }
+  };
+  const pinned = core.pickHistoryOutput(outputs, 'image', '203');
+  assert.equal(pinned.pick.filename, 'krea2_final_00001_.png');
+  assert.equal(pinned.fallback, false);
+  // no pin -> first image found (legacy behaviour)
+  assert.ok(core.pickHistoryOutput(outputs, 'image', null).pick);
+  // pinned node absent -> falls back to everything, flagged
+  const fb = core.pickHistoryOutput({ '211': outputs['211'] }, 'image', '203');
+  assert.equal(fb.fallback, true);
+  assert.equal(fb.pick.filename, 'krea2_base_00001_.png');
+  // media preference still applies inside the pinned node
+  const mixed = { '9': { images: [{ filename: 'a.mp4' }, { filename: 'b.png' }] } };
+  assert.equal(core.pickHistoryOutput(mixed, 'image', '9').pick.filename, 'b.png');
+  assert.equal(core.pickHistoryOutput(mixed, 'video', '9').pick.filename, 'a.mp4');
+  assert.equal(core.pickHistoryOutput({}, 'image', null).pick, null);
+});
+
 // toy RFC6455 server: handshake, then a text frame, a fragmented text
 // message, and a ping — records whether the client answered with a pong
 function makeWsServer() {

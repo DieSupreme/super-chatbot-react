@@ -127,6 +127,51 @@ describe('ComfyUI backend (image media — backend and media are separate axes)'
   });
 });
 
+describe('Super Duper Lustify workflow (the real shipped manifest)', () => {
+  let mock;
+  beforeEach(async () => {
+    mock = createMockApi();
+    // register the REAL manifest from workflows/ so this test tracks the file
+    const manifest = (await import('../../workflows/Super_Duper_Lustify_Final.manifest.json')).default;
+    const base = mock.api.comfy.workflows;
+    mock.api.comfy.workflows = async () => {
+      const r = await base();
+      r.list.push({ name: 'Super_Duper_Lustify_Final', label: manifest.label, media: manifest.media, controls: manifest.controls });
+      return r;
+    };
+    window.api = mock.api;
+  });
+  afterEach(() => cleanup());
+
+  it('appears in the IMAGE list, sends ONLY prompt/seed/width/height, zero Forge/OpenRouter', async () => {
+    mock.api.comfy.status = async () => ({ ok: true, status: 'running', url: 'http://127.0.0.1:8188', managed: true, log: [] });
+    const images = [];
+    render(<SdPanel open onToast={noop} onImage={(r) => images.push(r)} onVideo={noop} convoImages={[]} />);
+    const model = await screen.findByRole('combobox', { name: /Model/ });
+    await waitFor(() => screen.getByRole('option', { name: 'Super Duper Lustify (Krea2, high quality)' }));
+    fireEvent.change(model, { target: { value: 'comfy:Super_Duper_Lustify_Final' } });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Generate' })).toBeEnabled());
+
+    // exactly the four manifest controls — nothing about denoise/cfg/sampler
+    expect(screen.queryByText('Steps')).not.toBeInTheDocument();
+    expect(screen.queryByText(/CFG/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Denoise')).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText(/what to generate/), { target: { value: 'test prompt' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Generate' }));
+    await waitFor(() => expect(mock.calls.some(c => c[0] === 'comfy:generate')).toBe(true));
+
+    const call = mock.calls.find(c => c[0] === 'comfy:generate');
+    expect(call[1].workflow).toBe('Super_Duper_Lustify_Final');
+    expect(Object.keys(call[1].values).sort()).toEqual(['height', 'prompt', 'seed', 'width']);
+    expect(call[1].values).toMatchObject({ prompt: 'test prompt', seed: -1, width: 1216, height: 832 });
+    expect(mock.calls.filter(c => c[0] === 'comfy:generate').length).toBe(1);
+    expect(mock.calls.filter(c => c[0] === 'sd:txt2img').length).toBe(0);   // zero Forge
+    expect(mock.calls.filter(c => c[0] === 'sd:img2img').length).toBe(0);
+    expect(mock.calls.filter(c => c[0] === 'sendChat').length).toBe(0);     // zero OpenRouter
+  });
+});
+
 describe('result message routing (backend recorded on the message)', () => {
   let mock;
   beforeEach(() => {
