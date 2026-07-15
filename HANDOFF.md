@@ -1,118 +1,171 @@
-# HANDOFF — ComfyUI video backend (unattended run, complete)
+# HANDOFF — Super Duper Lustify (Krea2) workflow registration (unattended run)
 
-Everything below was built, tested, and validated live while you slept.
-Four commits on master (`ea8b217` → `c54f0a5` → `c8a0793` → final), each a
-working milestone you can bisect.
+Task: register `workflows/Super_Duper_Lustify_Final.json` as an app workflow and
+verify it end to end. Previous run's handoff (ComfyUI video backend) is in git
+history at `1ebc604^..1ebc604` if you need it back.
 
-## Discovery
+## PART 0 — what the JSON actually is, and the resolved node ids
 
-- **Install root**: `D:\Devlopment\AI\ComfyUI` (portable; app base
-  `…\ComfyUI\ComfyUI`, embedded Python). Port **8188** confirmed. Spawn =
-  `python_embeded\python.exe -s ComfyUI\main.py --windows-standalone-build
-  --disable-auto-launch`, cwd at the root.
-- **Versions** (`/system_stats`): ComfyUI **0.27.0**, Python 3.13.12,
-  **PyTorch 2.12.0+cu130**, `cuda:0 RTX 3080` (10 GB). No VRAM values are
-  hardcoded anywhere.
-- **Video nodes**: core ships the full LTX-Video node set and core video I/O
-  (`CreateVideo` / `SaveVideo` → real h264 mp4). 800 nodes total, no custom
-  nodes installed.
-- **Models: none installed** — every models/ subdir is placeholder-only.
-- **Electron 33 main = Node 20.18 → no global WebSocket**; the WS client is
-  hand-rolled on `http`+`crypto` (RFC 6455 receive side, ping→pong,
-  fragmentation, skips ComfyUI's binary preview frames). Zero new deps.
+**The file is NOT an API-format export.** It is ComfyUI's default Ctrl+S
+UI/graph export (`nodes[]` + `links[]` + `groups[]`, positional
+`widgets_values`). The task brief said API format; the file on disk disagrees.
+See judgment call #1 for how that was handled without touching the file.
 
-## What got built
+Node ids, resolved by WIDGET VALUES as instructed:
 
-- **`workflows/` — workflows are data.** Pairs of `<name>.json` (API-format
-  graph) + `<name>.manifest.json` (controls → node/input, multi-target
-  supported, min/max/step/default per control). Shipped: `ltx-video-t2v`
-  (the required template), `smoke-test` (no-model h264 clip via
-  EmptyImage→CreateVideo→SaveVideo), `drop-in-test` (created DURING
-  validation 5 to prove zero-code extension — kept as a third example).
-- **`src/main/comfy-core.js`** — electron-free: layout detection, spawn,
-  workflow list/load/patch (clamps to manifest ranges, throws on missing
-  nodes), `vid-YYYYMMDD-HHMMSS-<seed>.mp4` naming (same convention as
-  images, same output dir), the WS client. 7 unit tests incl. a live
-  handshake against an in-test upgrade server.
-- **`src/main/comfy.js`** — supervisor + IPC mirroring the Forge one:
-  start/stop/status with stdout→log pane, `taskkill /T /F` teardown +
-  `before-quit` hook, `comfy:generate` (patch → POST /prompt → WS progress
-  relayed over IPC → **/history poll every 1.5 s as the dropped-socket
-  fallback** → /view fetch → save), `comfy:interrupt`, `comfy:readVideo`
-  (path-contained to the output dir). Seeds are realized in main (ComfyUI
-  has no "-1 = random") and reported back for exact replay.
-- **`src/main/gpu-lock.js`** — mutual exclusion: each backend registers
-  stop/isBusy/isRunning; `claim()` REFUSES while the other backend is
-  mid-generation (clear error, never a silent kill) and otherwise stops it.
-  `sd:start` and `comfy:start` both claim before spawning.
-- **UI** — `[Image · Forge] [Video · ComfyUI]` toggle in the generation
-  panel (existing sd-tab primitives); the video half (`VideoPanel.jsx`)
-  renders every control **from the manifest** (text/seed/int/float);
-  progress = currently-executing node name + percent + elapsed seconds;
-  Stop → /interrupt; results play inline via `<video controls>` and land in
-  chat as `kind:'video'` messages carrying full `genParams`.
-- **Routing** — the one Regenerate control dispatches on the discriminator:
-  chat→OpenRouter, image→Forge, video→ComfyUI. Video messages also get
-  Reuse seed (original seed) and Reuse settings (loads workflow + values
-  back into the panel). Old conversations: `kind` inferred from
-  imagePath/videoPath, absent both → chat.
-- **Settings**: `comfyUrl` / `comfyPath` added to sd-defaults.json —
-  additive; old settings files keep working through the existing merge.
+| Role | id | Evidence (widgets_values) |
+|---|---|---|
+| BASE KSampler (user-facing seed) | **201** | `[0, "randomize", 8, 1, "euler", "simple", 1]` → 8 steps, denoise **1** |
+| Refine KSampler stage 2 — NOT exposed | **207** | `[0, "randomize", 16, 1, "euler", "simple", 0.35]` → denoise **0.35** |
+| Refine KSampler stage 3 — NOT exposed | **210** | `[0, "randomize", 10, 1, "euler", "simple", 0.2]` → denoise **0.2** |
+| Prompt CLIPTextEncode | **198** | `["PASTE YOUR PROMPT HERE"]` |
+| Size EmptySD3LatentImage | **200** | `[1216, 832, 1]` |
+| SaveImage FINAL (must be surfaced) | **203** | `["krea2_final"]`, fed by stage-3 decode (node 208) |
+| SaveImage base preview | **211** | `["krea2_base"]`, fed by stage-1 decode (node 202) |
+| Bypassed edit-mode branch (mode 4, never executes) | **250** (LoadImage), **251** (VAEEncode) | greyed-out img2img branch |
+| MarkdownNote (display only) | **259** | usage notes |
+| ImageScale (baked 2x target) | **209** | `["lanczos", 2432, 1664, "disabled"]` |
 
-## Validation results
+Negative prompt: none by design — node **199** `ConditioningZeroOut` feeds all
+three samplers' negative inputs. cfg is locked at 1 in all samplers (distilled
+Krea2). Upscale chain: 202 decode → 204 `ImageUpscaleWithModel`
+(4x_NMKD-Siax_200k) → 209 downscale to 2432x1664 → 206 re-encode → 207 → 210 →
+208 decode → 203 save.
+
+Stale-link note: the links table still contains link 501 (bypassed 251 → 201)
+from the author's edit-mode rewiring, but node 201's own input record says
+`latent_image ← link 398` (from 200). The converter trusts the per-node input
+records, so this is harmless.
+
+## What was built
+
+- **`workflows/Super_Duper_Lustify_Final.manifest.json`** — label
+  "Super Duper Lustify (Krea2, high quality)", `media: "image"`,
+  `backend: "comfy"`, `output: "203"`, controls ONLY:
+  `prompt → 198.text`, `seed → 201.seed`, `width → 200.width` (default 1216),
+  `height → 200.height` (default 832). Nothing else is exposed.
+- **`src/main/comfy-core.js` — `uiGraphToApi` (+ `isUiGraph`, `uiGraphTypes`)**:
+  converts a UI/graph export to the API format `/prompt` expects, at generate
+  time, using `/object_info` for the positional widget→input-name mapping.
+  Handles: bypassed nodes (mode 4) dropped with link pass-through, muted
+  (mode 2) dropped, notes dropped, seed `control_after_generate` slot skipped,
+  widgets promoted to inputs, unknown node types → clear error. `_meta.title`
+  is preserved so node-level progress shows real names.
+- **`src/main/comfy-core.js` — `pickHistoryOutput`**: a manifest may pin the
+  node whose files are THE result (`"output": "<id>"`). Without it, the old
+  behavior (first media-matching file across all outputs) was only surfacing
+  krea2_final by the accident of JS integer-key ordering (203 < 211). Now it
+  is explicit; if the pinned node produced nothing it falls back to all
+  outputs and logs a warning.
+- **`src/main/comfy.js`** — in `comfy:generate`: detect UI-format graph →
+  fetch `/object_info/<Type>` per distinct type (reusing the existing
+  objectInfoCache, dropped on server restart) → convert → patch → POST.
+  Output picking now goes through `pickHistoryOutput`.
+- **Zero renderer changes.** The image-mode unified model list, manifest-driven
+  controls, comfy routing, progress UI, Stop→/interrupt, and kind:'image' chat
+  delivery were already generic (built last session); the manifest drop was
+  enough to surface the workflow.
+
+## Judgment calls
+
+1. **The workflow JSON is a UI export, but the constraint said "do not modify
+   the workflow JSON."** Options were (a) hand-write a parallel API-format
+   file and register that, or (b) teach the app to accept UI exports. Chose
+   (b): the file ships byte-identical to how it was given, and the app gains
+   the ability to swallow ComfyUI's DEFAULT export format — every future
+   workflow drop no longer requires the "Save (API format)" dance. Conversion
+   needs `/object_info` (widget order is positional), which is why it happens
+   at generate time when the server is up anyway.
+2. **`output` manifest field added** rather than relying on key order or
+   filename sniffing to pick krea2_final over krea2_base. Data-driven, matches
+   the existing manifest vocabulary, backward compatible (older manifests have
+   no `output` → old behavior).
+3. **Seed exposed only for the base sampler (201).** The refine samplers keep
+   their exported seeds; their noise contribution at denoise 0.35/0.2 is part
+   of the tuned look. (They also had `control_after_generate: "randomize"` in
+   the editor, but API-format execution does not apply that — fixed values.)
+4. **Width/height ranges 256–2048 step 16**, same as the krea2-lustify
+   manifest, defaults 1216/832 per the task.
+5. **HANDOFF.md replaced** — the previous run's video-backend handoff is fully
+   preserved in git history (`git show 1ebc604:HANDOFF.md`).
+
+## Validation results — ALL PASS
+
+Live runs were driven through the REAL app: built renderer, real Electron
+main, real IPC, real ComfyUI — automated over CDP (`--remote-debugging-port`),
+clicking the same buttons you would.
 
 | # | Check | Result |
 |---|---|---|
-| 1 | Clip end to end from the app | **PASS** — smoke-test clip in ~2 s wall clock, `D:\Devlopment\AI\IMG\vid-20260714-072902-x.mp4` (valid `ftyp isom` mp4), played inline. Real LTX clip: BLOCKED (no weights). |
-| 2 | Mutual exclusion | **PASS both directions** — Forge start → port 8188 freed; ComfyUI start → port 7860 freed. Verified by live port state. |
-| 3 | Kill app mid-generation | **PASS** — fired a 2048×2048×480-frame job, `taskkill /F` on the app 3 s in: python processes = 0, port 8188 free. (Note: a hard external kill can't run `before-quit`; teardown then rides on the dead stdout pipe killing python. Graceful quits use the explicit taskkill hook.) |
-| 4 | Video Regenerate call counts | **PASS** — jsdom harness records `comfy:generate` = 1, `sd:txt2img` = 0, `sendChat` = 0 for a video message (and the inverse for chat). Live: Regenerate on the clip produced a third video via ComfyUI. |
-| 5 | **Drop-in workflow, zero code changes** | **PASS** — wrote `drop-in-test.json` + manifest while the app ran; after a backend re-toggle it appeared in the dropdown with its manifest-invented `Sidelen` control and generated a clip. No code was touched. |
-| 6 | Existing paths unchanged | **PASS** — old "lighthouse" conversation (pre-video, pre-kind) loads and renders with correct legacy actions; chat-regen and Forge-image tests from the previous session all still green in the suite. |
-| 7 | node --check + jsdom | **PASS** — all touched main/preload files clean; 106 tests green (52 unit / 21 terminal / 33 renderer) incl. mode switching, manifest-driven rendering, and discriminator routing. |
-| 8 | No new deps / paths untouched | **PASS** — package.json diff = 0 lines; Forge request path untouched (sd.js gained only the gpu-lock claim in `sd:start`); OpenRouter path untouched. CSP: see judgment call #2. |
+| 1 | Workflow appears in IMAGE mode | **PASS** — "Super Duper Lustify (Krea2, high quality)" listed in the unified image model dropdown next to Forge checkpoints; selecting it mounted the ComfyUI image body. Visible controls were exactly `["Prompt","Seed","Width","Height"]`. |
+| 2 | Routing counts | **PASS** — ComfyUI `/history` shows exactly **2 prompts** for the 2 Generate clicks (POST /prompt = 1 per generation). **Forge: 0 calls** (port 7860 had no listener the entire run — nothing to receive a call). **OpenRouter: 0 calls** (no chat turn ever initiated; renderer test additionally asserts comfy:generate=1, sd:txt2img=0, sd:img2img=0, sendChat=0 for this workflow). |
+| 3 | Chat image is krea2_final | **PASS** — run A: `img-20260714-215757-12345.png` at **2432×1664** (not 1216×832), 496 s. ComfyUI history confirms node 203 (krea2_final) and node 211 (krea2_base) both produced files and the app saved the final. Chat shows the image inline with Regenerate / Reuse seed / Reuse settings / img2img / inpaint actions. |
+| 4 | Seed change → different image | **PASS** — run B (seed 54321): `img-20260714-221125-54321.png`, also **2432×1664**, 807 s. sha256 `649a13c0…` (A) vs `b3570497…` (B) — different images. |
+| 5 | Progress UI | **PASS** — node-level phases streamed the whole time (CLIPTextEncode → KSampler 13→100% → VAEDecode → ImageUpscaleWithModel → VAEEncode → refine KSampler 6→100% → cleanup KSampler 10→90%), elapsed counter ticking; never froze during the ~3 min gap where the Siax model loaded (elapsed kept counting). Stop button wired to /interrupt (not exercised against a paid run). |
+| 6 | Existing paths unchanged | **PASS** — full suite green: **63 unit** (incl. 6 new) + 21 terminal + **38 renderer** (incl. 1 new). Old "testing" conversation from Jul 3 opened live in the app: 6 messages render, no crash. Forge/OpenRouter code untouched (`git diff 1ebc604..HEAD -- src/main/sd.js src/main/sse.js` is empty). |
+| 7 | Cleanup | **PASS** — ComfyUI stopped through the app's own Stop button; after app quit: no python.exe, no electron.exe, no listeners on 8188/7860. |
 
-## Judgment calls made on your behalf
+### The exact /prompt body (run A, seed 12345), as ComfyUI recorded it
 
-1. **Validating without model weights**: built `smoke-test` (core-nodes-only
-   mp4) so every pipeline stage — spawn, WS progress, history, /view, save,
-   chat message, playback, regenerate — is proven on this machine today.
-   The LTX template ships alongside and needs only weights.
-2. **CSP: added `media-src data:`** — the ONLY change to the CSP line. The
-   task said "no CSP changes" but also demanded inline `<video controls>`
-   playback; under `default-src 'none'` those are mutually exclusive.
-   I chose the narrowest possible grant, mirroring the existing
-   `img-src data:` (local bytes over IPC, zero network surface). Revert =
-   delete `media-src data:;` from index.html and inline playback dies;
-   everything else keeps working.
-3. **Mutual exclusion only manages APP-STARTED processes.** An externally
-   launched Forge/ComfyUI can't be safely killed by the app; the lock stops
-   managed instances and the status pills tell you what's running.
-4. **`showBackend` control handshake**: video replay actions switch the
-   panel to the video backend and wait for its control surface to mount
-   (stale closures are deleted on unmount) rather than driving a dead
-   component.
-5. **Kept `drop-in-test` in workflows/** as living documentation of the
-   zero-code extension path (it's also validation-5 evidence).
-6. **Inpaint-style replay caveat carried over**: video genParams persist
-   fully (they're small JSON); nothing is stripped.
+17 nodes — bypassed 250/251 and note 259 correctly absent; only
+198.text / 201.seed / 200.width / 200.height differ from the exported file
+(201.seed realized by the app; run B identical except seed 54321):
+
+```json
+{"195":{"inputs":{"unet_name":"lustifyNSFWCheckpoint_v10Krea2.safetensors","weight_dtype":"default"},"class_type":"UNETLoader"},
+ "196":{"inputs":{"clip_name":"qwen3vl_4b_fp8_scaled.safetensors","type":"krea2","device":"default"},"class_type":"CLIPLoader"},
+ "197":{"inputs":{"vae_name":"qwen_image_vae.safetensors"},"class_type":"VAELoader"},
+ "198":{"inputs":{"text":"a lighthouse on a rocky coast at golden hour, dramatic clouds, photorealistic","clip":["196",0]},"class_type":"CLIPTextEncode"},
+ "199":{"inputs":{"conditioning":["198",0]},"class_type":"ConditioningZeroOut"},
+ "200":{"inputs":{"width":1216,"height":832,"batch_size":1},"class_type":"EmptySD3LatentImage"},
+ "201":{"inputs":{"model":["195",0],"seed":12345,"steps":8,"cfg":1,"sampler_name":"euler","scheduler":"simple","positive":["198",0],"negative":["199",0],"latent_image":["200",0],"denoise":1},"class_type":"KSampler"},
+ "202":{"inputs":{"samples":["201",0],"vae":["197",0]},"class_type":"VAEDecode"},
+ "203":{"inputs":{"images":["208",0],"filename_prefix":"krea2_final"},"class_type":"SaveImage"},
+ "204":{"inputs":{"upscale_model":["205",0],"image":["202",0]},"class_type":"ImageUpscaleWithModel"},
+ "205":{"inputs":{"model_name":"4x_NMKD-Siax_200k.pth"},"class_type":"UpscaleModelLoader"},
+ "206":{"inputs":{"pixels":["209",0],"vae":["197",0]},"class_type":"VAEEncode"},
+ "207":{"inputs":{"model":["195",0],"seed":0,"steps":16,"cfg":1,"sampler_name":"euler","scheduler":"simple","positive":["198",0],"negative":["199",0],"latent_image":["206",0],"denoise":0.35},"class_type":"KSampler"},
+ "208":{"inputs":{"samples":["210",0],"vae":["197",0]},"class_type":"VAEDecode"},
+ "209":{"inputs":{"image":["204",0],"upscale_method":"lanczos","width":2432,"height":1664,"crop":"disabled"},"class_type":"ImageScale"},
+ "210":{"inputs":{"model":["195",0],"seed":0,"steps":10,"cfg":1,"sampler_name":"euler","scheduler":"simple","positive":["198",0],"negative":["199",0],"latent_image":["207",0],"denoise":0.2},"class_type":"KSampler"},
+ "211":{"inputs":{"images":["202",0],"filename_prefix":"krea2_base"},"class_type":"SaveImage"}}
+```
+
+(`_meta.title` fields omitted above for brevity; they are present and drive the
+progress labels.)
+
+### The manifest, verbatim
+
+```json
+{
+  "label": "Super Duper Lustify (Krea2, high quality)",
+  "backend": "comfy",
+  "media": "image",
+  "output": "203",
+  "controls": {
+    "prompt": { "node": "198", "input": "text", "type": "textarea", "group": "Basic" },
+    "seed":   { "node": "201", "input": "seed", "type": "seed", "group": "Basic" },
+    "width":  { "node": "200", "input": "width",  "type": "int", "default": 1216, "min": 256, "max": 2048, "step": 16, "group": "Basic" },
+    "height": { "node": "200", "input": "height", "type": "int", "default": 832, "min": 256, "max": 2048, "step": 16, "group": "Basic" }
+  }
+}
+```
 
 ## BLOCKED
 
-- **Real LTX-Video generation** — no weights on disk. Unblock:
-  1. `ltx-video-2b-v0.9.5.safetensors` → `D:\Devlopment\AI\ComfyUI\ComfyUI\models\checkpoints\`
-  2. `t5xxl_fp16.safetensors` → `D:\Devlopment\AI\ComfyUI\ComfyUI\models\text_encoders\`
-  3. Pick "LTX-Video — text to video" in the panel. Zero code changes.
-  (On the 3080 use fp8/fp16 variants sized for 10 GB; the workflow JSON's
-  `ckpt_name` string is the only thing to adjust if your filename differs —
-  a data edit in `workflows/ltx-video-t2v.json`.)
+Nothing. Every check ran to completion on this machine.
 
-## What you need to do next
+## What you do next
 
-1. Download the LTX weights (above) and generate a real clip; if quality
-   needs different defaults, edit `ltx-video-t2v.manifest.json` — not code.
-2. Optional: export any workflow from ComfyUI's UI ("Save (API format)"),
-   write a manifest for the knobs you care about, drop the pair in
-   `workflows/`. That's the whole extension story.
-3. The three magenta/blue smoke clips from validation are in
-   `D:\Devlopment\AI\IMG` (`vid-20260714-*.mp4`) — delete at will.
+- Nothing required — the workflow is live. The two verification images
+  (lighthouse, seeds 12345/54321) are in `D:\Devlopment\AI\IMG` as
+  `img-20260714-215757-12345.png` / `img-20260714-221125-54321.png`; the
+  corresponding krea2_final/krea2_base copies also sit in ComfyUI's own
+  output folder. Delete at will.
+- To tweak quality, the knobs are data: refine denoise in the workflow JSON
+  (nodes 207/210), ImageScale target (node 209), or expose more controls by
+  adding manifest entries. If the 2432×1664 refine ever OOMs, the workflow's
+  own note says drop node 209 to 2048×1400.
+- New capability you now have for free: `workflows/` accepts ComfyUI's
+  DEFAULT Ctrl+S export (UI/graph format) — no more "Save (API format)"
+  dance. Any `<name>.json` + manifest pair works in either format.
