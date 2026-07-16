@@ -1,0 +1,338 @@
+{
+  "label": "Lustify",
+  "backend": "comfy",
+  "media": "image",
+  "output": "203",
+  "controls": {
+    "prompt": {
+      "node": "198",
+      "input": "text",
+      "type": "textarea",
+      "group": "Basic",
+      "node_type": "CLIPTextEncode",
+      "node_title": ""
+    },
+    "seed": {
+      "targets": [
+        {
+          "node": "201",
+          "input": "seed"
+        },
+        {
+          "node": "207",
+          "input": "seed"
+        }
+      ],
+      "type": "seed",
+      "group": "Basic",
+      "node_type": "KSampler",
+      "node_title": ""
+    },
+    "width": {
+      "node": "200",
+      "input": "width",
+      "type": "int",
+      "default": 1216,
+      "min": 64,
+      "max": 4096,
+      "step": 8,
+      "group": "Basic",
+      "node_type": "EmptySD3LatentImage",
+      "node_title": ""
+    },
+    "height": {
+      "node": "200",
+      "input": "height",
+      "type": "int",
+      "default": 832,
+      "min": 64,
+      "max": 4096,
+      "step": 8,
+      "group": "Basic",
+      "node_type": "EmptySD3LatentImage",
+      "node_title": ""
+    },
+    "model": {
+      "node": "195",
+      "input": "unet_name",
+      "type": "select",
+      "options_from": "object_info:UNETLoader:unet_name",
+      "default": "lustifyNSFWCheckpoint_v10Krea2.safetensors",
+      "group": "Models",
+      "node_type": "UNETLoader",
+      "node_title": ""
+    },
+    "text_encoder": {
+      "node": "196",
+      "input": "clip_name",
+      "type": "select",
+      "options_from": "object_info:CLIPLoader:clip_name",
+      "default": "qwen3vl_4b_fp8_scaled.safetensors",
+      "group": "Models",
+      "node_type": "CLIPLoader",
+      "node_title": ""
+    },
+    "vae": {
+      "node": "197",
+      "input": "vae_name",
+      "type": "select",
+      "options_from": "object_info:VAELoader:vae_name",
+      "default": "qwen_image_vae.safetensors",
+      "group": "Models",
+      "node_type": "VAELoader",
+      "node_title": ""
+    },
+    "upscale_model": {
+      "node": "205",
+      "input": "model_name",
+      "type": "select",
+      "options_from": "object_info:UpscaleModelLoader:model_name",
+      "default": "4x_NMKD-Siax_200k.pth",
+      "group": "Models",
+      "node_type": "UpscaleModelLoader",
+      "node_title": ""
+    },
+    "cfg": {
+      "targets": [
+        {
+          "node": "201",
+          "input": "cfg"
+        },
+        {
+          "node": "207",
+          "input": "cfg"
+        }
+      ],
+      "type": "float",
+      "min": 1,
+      "max": 10,
+      "step": 0.5,
+      "group": "Sampling (advanced)",
+      "default": 1,
+      "node_type": "KSampler",
+      "node_title": ""
+    },
+    "sampler": {
+      "targets": [
+        {
+          "node": "201",
+          "input": "sampler_name"
+        },
+        {
+          "node": "207",
+          "input": "sampler_name"
+        }
+      ],
+      "type": "select",
+      "group": "Sampling (advanced)",
+      "options_from": "object_info:KSampler:sampler_name",
+      "default": "euler",
+      "node_type": "KSampler",
+      "node_title": ""
+    },
+    "unetloader_weight_dtype": {
+      "node": "195",
+      "input": "weight_dtype",
+      "type": "select",
+      "options_from": "object_info:UNETLoader:weight_dtype",
+      "default": "default",
+      "hidden": true,
+      "label": "Weight dtype",
+      "group": "UNETLoader",
+      "node_type": "UNETLoader",
+      "node_title": ""
+    },
+    "cliploader_type": {
+      "node": "196",
+      "input": "type",
+      "type": "select",
+      "options_from": "object_info:CLIPLoader:type",
+      "default": "krea2",
+      "hidden": true,
+      "label": "Type",
+      "group": "CLIPLoader",
+      "node_type": "CLIPLoader",
+      "node_title": ""
+    },
+    "cliploader_device": {
+      "node": "196",
+      "input": "device",
+      "type": "select",
+      "options_from": "object_info:CLIPLoader:device",
+      "default": "default",
+      "hidden": true,
+      "label": "Device",
+      "group": "CLIPLoader",
+      "node_type": "CLIPLoader",
+      "node_title": ""
+    },
+    "emptysd3latentimage_batch_size": {
+      "node": "200",
+      "input": "batch_size",
+      "type": "int",
+      "min": 1,
+      "max": 4096,
+      "step": 1,
+      "default": 1,
+      "hidden": true,
+      "label": "Batch size",
+      "group": "EmptySD3LatentImage",
+      "node_type": "EmptySD3LatentImage",
+      "node_title": ""
+    },
+    "ksampler_steps": {
+      "node": "201",
+      "input": "steps",
+      "type": "int",
+      "min": 1,
+      "max": 10000,
+      "step": 1,
+      "tooltip": "The number of steps used in the denoising process.",
+      "default": 8,
+      "hidden": true,
+      "label": "Steps",
+      "group": "KSampler",
+      "node_type": "KSampler",
+      "node_title": ""
+    },
+    "ksampler_scheduler": {
+      "node": "201",
+      "input": "scheduler",
+      "type": "select",
+      "options_from": "object_info:KSampler:scheduler",
+      "tooltip": "The scheduler controls how noise is gradually removed to form the image.",
+      "default": "simple",
+      "hidden": true,
+      "label": "Scheduler",
+      "group": "KSampler",
+      "node_type": "KSampler",
+      "node_title": ""
+    },
+    "ksampler_denoise": {
+      "node": "201",
+      "input": "denoise",
+      "type": "float",
+      "min": 0,
+      "max": 1,
+      "step": 0.01,
+      "tooltip": "The amount of denoising applied, lower values will maintain the structure of the initial image allowing for image to image sampling.",
+      "default": 1,
+      "hidden": true,
+      "label": "Denoise",
+      "group": "KSampler",
+      "node_type": "KSampler",
+      "node_title": ""
+    },
+    "saveimage_filename_prefix": {
+      "node": "203",
+      "input": "filename_prefix",
+      "type": "text",
+      "tooltip": "The prefix for the file to save. This may include formatting information such as %date:yyyy-MM-dd% or %Empty Latent Image.width% to include values from nodes.",
+      "default": "ComfyUI",
+      "hidden": true,
+      "label": "Filename prefix",
+      "group": "SaveImage",
+      "node_type": "SaveImage",
+      "node_title": ""
+    },
+    "ksampler_steps_2": {
+      "node": "207",
+      "input": "steps",
+      "type": "int",
+      "min": 1,
+      "max": 10000,
+      "step": 1,
+      "tooltip": "The number of steps used in the denoising process.",
+      "default": 8,
+      "hidden": true,
+      "label": "Steps",
+      "group": "KSampler",
+      "node_type": "KSampler",
+      "node_title": ""
+    },
+    "ksampler_scheduler_2": {
+      "node": "207",
+      "input": "scheduler",
+      "type": "select",
+      "options_from": "object_info:KSampler:scheduler",
+      "tooltip": "The scheduler controls how noise is gradually removed to form the image.",
+      "default": "simple",
+      "hidden": true,
+      "label": "Scheduler",
+      "group": "KSampler",
+      "node_type": "KSampler",
+      "node_title": ""
+    },
+    "ksampler_denoise_2": {
+      "node": "207",
+      "input": "denoise",
+      "type": "float",
+      "min": 0,
+      "max": 1,
+      "step": 0.01,
+      "tooltip": "The amount of denoising applied, lower values will maintain the structure of the initial image allowing for image to image sampling.",
+      "default": 0.35,
+      "hidden": true,
+      "label": "Denoise",
+      "group": "KSampler",
+      "node_type": "KSampler",
+      "node_title": ""
+    },
+    "imagescale_upscale_method": {
+      "node": "209",
+      "input": "upscale_method",
+      "type": "select",
+      "options_from": "object_info:ImageScale:upscale_method",
+      "default": "lanczos",
+      "hidden": true,
+      "label": "Upscale method",
+      "group": "ImageScale",
+      "node_type": "ImageScale",
+      "node_title": ""
+    },
+    "imagescale_width": {
+      "node": "209",
+      "input": "width",
+      "type": "int",
+      "min": 0,
+      "max": 16384,
+      "step": 1,
+      "default": 2432,
+      "hidden": true,
+      "label": "Width",
+      "group": "ImageScale",
+      "node_type": "ImageScale",
+      "node_title": ""
+    },
+    "imagescale_height": {
+      "node": "209",
+      "input": "height",
+      "type": "int",
+      "min": 0,
+      "max": 16384,
+      "step": 1,
+      "default": 1664,
+      "hidden": true,
+      "label": "Height",
+      "group": "ImageScale",
+      "node_type": "ImageScale",
+      "node_title": ""
+    },
+    "imagescale_crop": {
+      "node": "209",
+      "input": "crop",
+      "type": "select",
+      "options_from": "object_info:ImageScale:crop",
+      "default": "disabled",
+      "hidden": true,
+      "label": "Crop",
+      "group": "ImageScale",
+      "node_type": "ImageScale",
+      "node_title": ""
+    }
+  },
+  "generated": {
+    "sourceHash": "sha256:73642f0a9bb89da2291fae73952907b79dc92bda2ee461cddac0b7c3dbfaf281",
+    "withInfo": true
+  }
+}
