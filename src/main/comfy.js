@@ -2,7 +2,8 @@
 // and the WebSocket live here in main (renderer CSP allows no network); the
 // renderer only sees window.api.comfy.*. Workflows are DATA — pairs of
 // <name>.json + <name>.manifest.json in <appRoot>/workflows; adding a video
-// model is a file drop, never a code change.
+// model is a file drop, never a code change. Manifests are auto-generated
+// from the workflow graph on scan (hand-written ones are left alone).
 const { ipcMain, app: electronApp, BrowserWindow } = require('electron');
 const path = require('path');
 const fs = require('fs');
@@ -157,9 +158,126 @@ function registerComfyIpc(app, getWin) {
   });
 
   // ---------- workflows (data, not code) ----------
-  ipcMain.handle('comfy:workflows', () => {
-    try { return { ok: true, list: core.listWorkflows(workflowsDir) }; }
+  // Every scan first (re)generates manifest sidecars for bare/changed .json
+  // drops — content-hashed, so an unchanged file costs one read. Hand-written
+  // manifests (no "generated" marker) are never touched. When ComfyUI is
+  // reachable the scan feeds /object_info specs into extraction (real types,
+  // ranges, combos for EVERY node — no per-type code); offline scans fall
+  // back to widget markers and upgrade automatically on the first online one.
+  async function syncManifests(force) {
+    let serverUp = null;   // probed once per scan, not per workflow
+    const getInfo = async (types) => {
+      if (serverUp === null) serverUp = await probe(1200);
+      if (!serverUp) return null;
+      try {
+        return await core.fetchTypeInfo(types, (route) => cfetch(route, { timeoutMs: 15000 }), objectInfoCache);
+      } catch (_) { return null; }
+    };
+    const results = await core.ensureManifests(workflowsDir, { force, getInfo });
+    for (const r of results) {
+      if (r.action === 'fresh' || (r.action === 'manual' && !force)) continue;
+      pushLog(`[app] manifest ${r.action}: ${r.name}` + (r.error ? ` (${r.error})` : ''));
+    }
+    return results;
+  }
+
+  ipcMain.handle('comfy:workflows', async () => {
+    try {
+      await syncManifests(false);
+      return { ok: true, list: core.listWorkflows(workflowsDir) };
+    } catch (err) { return { ok: false, error: err.message }; }
+  });
+
+  ipcMain.handle('comfy:rebuildManifests', async () => {
+    try { return { ok: true, results: await syncManifests(true), list: core.listWorkflows(workflowsDir) }; }
     catch (err) { return { ok: false, error: err.message }; }
+  });
+
+  // ---------- control overrides (the "Configure controls" picker) ----------
+  // Shown/hidden + custom labels per control, keyed "<node>:<input>" in
+  // workflows/control-overrides.json — applied at read time in listWorkflows,
+  // so rescans and regenerations never wipe the user's choices.
+  ipcMain.handle('comfy:setControlOverride', (_e, { workflow, id, hidden, label }) => {
+    try {
+      const patch = {};
+      if (typeof hidden === 'boolean') patch.hidden = hidden;
+      if (typeof label === 'string' || label === null) patch.label = label;
+      const { error } = core.setControlOverride(workflowsDir, String(workflow || ''), String(id || ''), patch);
+      if (error) pushLog('[app] ' + error);
+      return { ok: true, list: core.listWorkflows(workflowsDir) };
+    } catch (err) { return { ok: false, error: err.message }; }
+  });
+
+  // ---------- working control values (the implicit per-workflow draft) ----------
+  // The panel's current values, persisted so unmounts (tab switches) and app
+  // restarts never lose typed state. Pruned against the live manifest on both
+  // read and write so a control removed by a rescan drops silently.
+  const manifestControls = (workflow) => {
+    try {
+      const m = JSON.parse(fs.readFileSync(path.join(workflowsDir, workflow + '.manifest.json'), 'utf8'));
+      return m.controls || null;
+    } catch (_) { return null; }   // manifest missing/unreadable — skip pruning
+  };
+  ipcMain.handle('comfy:values', (_e, workflow) => {
+    try {
+      const wf = String(workflow || '');
+      const { values, error } = core.readControlValues(workflowsDir);
+      if (error) pushLog('[app] ' + error);
+      const mine = values[wf] || {};
+      const controls = manifestControls(wf);
+      return { ok: true, values: controls ? core.pruneControlValues(mine, controls) : mine };
+    } catch (err) { return { ok: false, error: err.message }; }
+  });
+  ipcMain.handle('comfy:valuesSave', (_e, { workflow, values }) => {
+    try {
+      const wf = String(workflow || '');
+      const controls = manifestControls(wf);
+      const vals = controls ? core.pruneControlValues(values || {}, controls) : (values || {});
+      const { error } = core.saveControlValues(workflowsDir, wf, vals);
+      if (error) pushLog('[app] ' + error);
+      return { ok: true };
+    } catch (err) { return { ok: false, error: err.message }; }
+  });
+  ipcMain.handle('comfy:valuesClear', (_e, workflow) => {
+    try {
+      core.clearControlValues(workflowsDir, String(workflow || ''));
+      return { ok: true };
+    } catch (err) { return { ok: false, error: err.message }; }
+  });
+
+  // ---------- prompt presets ----------
+  // Named prompt snapshots, per workflow, in ONE file the workflows dir
+  // already owns: workflows/prompt-presets.json. Never inside the manifests
+  // (those are regenerated); a corrupt file reads as empty and is logged,
+  // never fatal — the next save recreates it.
+  const presetErr = (error) => { if (error) pushLog('[app] ' + error); };
+  ipcMain.handle('comfy:presets', (_e, workflow) => {
+    try {
+      const { presets, error } = core.readPromptPresets(workflowsDir);
+      presetErr(error);
+      return { ok: true, presets: presets[String(workflow || '')] || [] };
+    } catch (err) { return { ok: false, error: err.message }; }
+  });
+  ipcMain.handle('comfy:presetSave', (_e, { workflow, name, values }) => {
+    try {
+      const { list, error } = core.savePromptPreset(workflowsDir, String(workflow || ''), name, values || {});
+      presetErr(error);
+      return { ok: true, presets: list };
+    } catch (err) { return { ok: false, error: err.message }; }
+  });
+  ipcMain.handle('comfy:presetRename', (_e, { workflow, oldName, newName }) => {
+    try {
+      const { list, error } = core.renamePromptPreset(workflowsDir, String(workflow || ''), oldName, newName);
+      presetErr(error);
+      return { ok: true, presets: list };
+    } catch (err) { return { ok: false, error: err.message }; }
+  });
+  ipcMain.handle('comfy:presetDelete', (_e, { workflow, name }) => {
+    try {
+      const { list, error } = core.deletePromptPreset(workflowsDir, String(workflow || ''), name);
+      presetErr(error);
+      return { ok: true, presets: list };
+    } catch (err) { return { ok: false, error: err.message }; }
   });
 
   // ---------- live dropdown options ----------
@@ -171,9 +289,10 @@ function registerComfyIpc(app, getWin) {
   ipcMain.handle('comfy:objectInfo', async (_e, { nodeType, input }) => {
     try {
       const key = String(nodeType || '');
-      if (!key || /[^\w.-]/.test(key)) return { ok: false, error: 'bad node type' };
+      let route;   // rgthree-style names have spaces/parens — legal once encoded
+      try { route = core.objectInfoRoute(key); } catch (_) { return { ok: false, error: 'bad node type' }; }
       if (!objectInfoCache.has(key)) {
-        const r = await cfetch('/object_info/' + encodeURIComponent(key), { timeoutMs: 10000 });
+        const r = await cfetch(route, { timeoutMs: 10000 });
         if (!r.ok) return { ok: false, error: `object_info ${key}: HTTP ${r.status}` };
         objectInfoCache.set(key, await r.json());
       }
@@ -195,16 +314,10 @@ function registerComfyIpc(app, getWin) {
       // UI-format export (ComfyUI's default Ctrl+S)? Convert to API format
       // using /object_info for the widget-name order — per-type, cached.
       if (core.isUiGraph(graph)) {
-        const info = {};
-        for (const t of core.uiGraphTypes(graph)) {
-          if (/[^\w.-]/.test(t)) throw new Error(`workflow node type "${t}" has a name /object_info cannot serve`);
-          if (!objectInfoCache.has(t)) {
-            const r = await cfetch('/object_info/' + encodeURIComponent(t), { timeoutMs: 15000 });
-            if (!r.ok) throw new Error(`object_info ${t}: HTTP ${r.status}`);
-            objectInfoCache.set(t, await r.json());
-          }
-          Object.assign(info, objectInfoCache.get(t));
-        }
+        // per-type /object_info, cached; names with spaces/parens (rgthree)
+        // are encoded by objectInfoRoute inside fetchTypeInfo
+        const info = await core.fetchTypeInfo(core.uiGraphTypes(graph),
+          (route) => cfetch(route, { timeoutMs: 15000 }), objectInfoCache);
         graph = core.uiGraphToApi(graph, info);
         pushLog(`[app] UI-format workflow converted to API format (${Object.keys(graph).length} active nodes)`);
       }
@@ -221,7 +334,11 @@ function registerComfyIpc(app, getWin) {
       pushLog('[app] POST /prompt workflow=' + workflow + ' ' + JSON.stringify(vals));
 
       const nodeTitle = (id) => (patched[id] && ((patched[id]._meta && patched[id]._meta.title) || patched[id].class_type)) || id;
-      ws = core.openWs(baseUrl().replace(/^http/, 'http') + `/ws?clientId=${clientId}`, {
+      // retry wrapper: if ComfyUI restarts mid-job the socket reconnects with
+      // backoff, so progress/preview recover without an app restart
+      // (completion is independently covered by the /history poll below)
+      let lastPreview = 0;
+      ws = core.openWsWithRetry(baseUrl() + `/ws?clientId=${clientId}`, {
         onMessage: (msg) => {
           if (!msg || !msg.data) return;
           if (msg.type === 'executing' && msg.data.node) {
@@ -232,8 +349,20 @@ function registerComfyIpc(app, getWin) {
               value: msg.data.value || 0, max: msg.data.max || 0, elapsed: (Date.now() - t0) / 1000
             });
           }
-        }
-      });
+        },
+        // binary preview frames (needs a --preview-method that produces them —
+        // absent frames simply mean no comfy:preview events)
+        onBinary: (buf) => {
+          const p = core.parseBinaryPreview(buf);
+          if (!p) return;
+          const now = Date.now();
+          if (now - lastPreview < 250) return;   // sampler frame rate would flood IPC
+          lastPreview = now;
+          send('comfy:preview', { b64: Buffer.from(p.bytes).toString('base64'), mime: p.mime });
+        },
+        onReconnect: (delay, attempt) =>
+          pushLog(`[app] progress socket dropped — reconnect ${attempt} in ${Math.round(delay / 1000)}s`)
+      }, { active: () => jobActive });
 
       const res = await cfetch('/prompt', { method: 'POST', body: { prompt: patched, client_id: clientId }, timeoutMs: 30000 });
       if (!res.ok) {
@@ -305,6 +434,37 @@ function registerComfyIpc(app, getWin) {
   ipcMain.handle('comfy:interrupt', async () => {
     try { const r = await cfetch('/interrupt', { method: 'POST', body: {}, timeoutMs: 5000 }); return { ok: r.ok }; }
     catch (err) { return offline(err); }
+  });
+
+  // cancel EVERYTHING: pending queue entries cleared, running job interrupted
+  ipcMain.handle('comfy:cancel', async () => {
+    try {
+      const r = await core.cancelAll((route, opts) => cfetch(route, opts));
+      pushLog(`[app] cancel: interrupted=${r.interrupted}` + (r.cleared ? ', pending queue cleared' : ''));
+      return r;
+    } catch (err) { return offline(err); }
+  });
+
+  // release models between image and video runs — one 10GB card
+  ipcMain.handle('comfy:free', async () => {
+    try {
+      const r = await cfetch('/free', { method: 'POST', body: { unload_models: true, free_memory: true }, timeoutMs: 30000 });
+      if (r.ok) pushLog('[app] /free — models unloaded, VRAM released');
+      return r.ok ? { ok: true } : { ok: false, error: 'free failed (HTTP ' + r.status + ')' };
+    } catch (err) { return offline(err); }
+  });
+
+  // put a local image into ComfyUI's input folder (multipart /upload/image)
+  // so the workflow's LoadImage select can use it as e.g. the i2v start image
+  ipcMain.handle('comfy:uploadImage', async (_e, p) => {
+    try {
+      const r = await core.uploadImage(baseUrl(), path.resolve(String(p || '')));
+      pushLog('[app] uploaded to ComfyUI input: ' + r.name);
+      return { ok: true, name: r.name };
+    } catch (err) {
+      if (err && (err.name === 'TimeoutError' || err.name === 'AbortError')) return offline(err);
+      return { ok: false, error: String(err && err.message || err).slice(0, 300) };
+    }
   });
 
   // read a saved video back for inline playback — restricted to sdImageDir,

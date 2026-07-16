@@ -103,10 +103,30 @@ contextBridge.exposeInMainWorld('api', {
     start: () => ipcRenderer.invoke('comfy:start'),
     stop: () => ipcRenderer.invoke('comfy:stop'),
     workflows: () => ipcRenderer.invoke('comfy:workflows'),
+    rebuildManifests: () => ipcRenderer.invoke('comfy:rebuildManifests'),
+    // control picker — shown/hidden + label overrides in workflows/control-overrides.json
+    setControlOverride: (p) => ipcRenderer.invoke('comfy:setControlOverride', p),
     objectInfo: (nodeType, input) => ipcRenderer.invoke('comfy:objectInfo', { nodeType, input }),
+    // working draft values — per-workflow last-used control values in workflows/control-values.json
+    values: (workflow) => ipcRenderer.invoke('comfy:values', workflow),
+    valuesSave: (p) => ipcRenderer.invoke('comfy:valuesSave', p),
+    valuesClear: (workflow) => ipcRenderer.invoke('comfy:valuesClear', workflow),
+    // prompt presets — per-workflow saved prompt values in workflows/prompt-presets.json
+    presets: (workflow) => ipcRenderer.invoke('comfy:presets', workflow),
+    presetSave: (p) => ipcRenderer.invoke('comfy:presetSave', p),
+    presetRename: (p) => ipcRenderer.invoke('comfy:presetRename', p),
+    presetDelete: (p) => ipcRenderer.invoke('comfy:presetDelete', p),
     generate: (p) => ipcRenderer.invoke('comfy:generate', p),
     interrupt: () => ipcRenderer.invoke('comfy:interrupt'),
+    cancel: () => ipcRenderer.invoke('comfy:cancel'),
+    free: () => ipcRenderer.invoke('comfy:free'),
+    uploadImage: (p) => ipcRenderer.invoke('comfy:uploadImage', p),
     readVideo: (p) => ipcRenderer.invoke('comfy:readVideo', p),
+    onPreview: (cb) => {
+      const h = (_e, d) => cb(d);
+      ipcRenderer.on('comfy:preview', h);
+      return () => ipcRenderer.removeListener('comfy:preview', h);
+    },
     onProgress: (cb) => {
       const h = (_e, d) => cb(d);
       ipcRenderer.on('comfy:progress', h);

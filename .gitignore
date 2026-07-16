@@ -2,3 +2,8 @@ node_modules/
 dist/
 .superpowers/
 *.log
+
+# ComfyUI user-state sidecars (live next to the workflow pairs, never code)
+workflows/prompt-presets.json
+workflows/control-overrides.json
+workflows/control-values.json

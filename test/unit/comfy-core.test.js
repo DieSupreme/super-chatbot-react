@@ -43,6 +43,33 @@ test('patchWorkflow: manifest pointing at a missing node throws clearly', () => 
   );
 });
 
+test('patchWorkflow: dotted input path patches a key inside an object-valued input', () => {
+  const graph = { '30': { class_type: 'Power Lora Loader (rgthree)', inputs: {
+    lora_1: { on: true, lora: 'old.safetensors', strength: 1 }
+  } } };
+  const manifest = { controls: { lora: { node: '30', input: 'lora_1.lora', type: 'select' } } };
+  const out = core.patchWorkflow(graph, manifest, { lora: 'new.safetensors' });
+  assert.equal(out['30'].inputs.lora_1.lora, 'new.safetensors');
+  assert.equal(out['30'].inputs.lora_1.on, true);                    // siblings untouched
+  assert.equal(out['30'].inputs.lora_1.strength, 1);
+  assert.equal(graph['30'].inputs.lora_1.lora, 'old.safetensors');   // original not mutated
+  // dynamic widgets can have LITERAL dots in their flat input names
+  // ("resize_type.multiplier") — a dot only means an object path when the
+  // parent actually is an object
+  const g2 = { '5': { class_type: 'ResizeImageMaskNode', inputs: {
+    resize_type: 'multiplier', 'resize_type.multiplier': 0.5
+  } } };
+  const out2 = core.patchWorkflow(g2,
+    { controls: { m: { node: '5', input: 'resize_type.multiplier', type: 'float' } } }, { m: 0.75 });
+  assert.equal(out2['5'].inputs['resize_type.multiplier'], 0.75);
+  assert.equal(out2['5'].inputs.resize_type, 'multiplier');          // the sibling select untouched
+  // parent object missing -> clear error, not a silent bad entry
+  assert.throws(
+    () => core.patchWorkflow(graph, { controls: { x: { node: '30', input: 'lora_9.lora' } } }, { x: 'a' }),
+    /lora_9/
+  );
+});
+
 test('listWorkflows: pairs only, sorted by label, malformed manifests skipped', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wf-'));
   fs.writeFileSync(path.join(dir, 'b.json'), '{}');
@@ -156,7 +183,20 @@ const OBJECT_INFO = {
     width: ['INT', {}], height: ['INT', {}], crop: [['disabled', 'center'], {}]
   } } },
   SaveImage: { input: { required: { images: ['IMAGE', {}], filename_prefix: ['STRING', { default: 'ComfyUI' }] } } },
-  LoadImage: { input: { required: { image: [['example.png'], { image_upload: true }] } } }
+  LoadImage: { input: { required: { image: [['example.png'], { image_upload: true }] } } },
+  'Power Lora Loader (rgthree)': { input: { required: {}, optional: { model: ['MODEL', {}], clip: ['CLIP', {}] } } },
+  VHS_VideoCombine: { input: { required: {
+    images: ['IMAGE', {}], frame_rate: ['FLOAT', {}], loop_count: ['INT', {}],
+    filename_prefix: ['STRING', {}], format: [['video/h264-mp4', 'image/gif'], {}],
+    pingpong: ['BOOLEAN', {}], save_output: ['BOOLEAN', {}]
+  } } },
+  // dynamic-widget node: the static spec has a DIFFERENT order than the
+  // export's widget list, and the nested multiplier isn't in the spec at all
+  ResizeImageMaskNode: { input: { required: {
+    input: ['IMAGE', {}],
+    scale_method: [['nearest-exact', 'area', 'lanczos'], {}],
+    resize_type: [['scale by multiplier', 'absolute size'], {}]
+  } } }
 };
 
 test('isUiGraph: nodes[] array marks the UI export, API format does not', () => {
@@ -209,7 +249,7 @@ test('uiGraphToApi: unknown node type throws with the type named', () => {
 });
 
 test('uiGraphToApi: converts the shipped Super Duper Lustify UI export correctly', () => {
-  const ui = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'workflows', 'Super_Duper_Lustify_Final.json'), 'utf8'));
+  const ui = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'fixtures', 'Super_Duper_Lustify_Final.json'), 'utf8'));
   assert.equal(core.isUiGraph(ui), true);
   for (const t of core.uiGraphTypes(ui)) assert.ok(OBJECT_INFO[t], `fixture object_info missing ${t}`);
   const api = core.uiGraphToApi(ui, OBJECT_INFO);
@@ -239,11 +279,269 @@ test('uiGraphToApi: converts the shipped Super Duper Lustify UI export correctly
   assert.deepEqual([api['209'].inputs.width, api['209'].inputs.height], [2432, 1664]);
   assert.deepEqual(api['206'].inputs.pixels, ['209', 0]);
   // the manifest's controls all point at inputs that exist post-conversion
-  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'workflows', 'Super_Duper_Lustify_Final.manifest.json'), 'utf8'));
+  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'fixtures', 'Super_Duper_Lustify_Final.manifest.json'), 'utf8'));
   const patched = core.patchWorkflow(api, manifest, { prompt: 'a test', seed: 7, width: 1216, height: 832 });
   assert.equal(patched['198'].inputs.text, 'a test');
   assert.equal(patched['201'].inputs.seed, 7);
   assert.equal(patched['207'].inputs.denoise, 0.35);        // refine untouched by patch
+});
+
+// ---------- subgraph flattening ----------
+// A UI export with one subgraph instance: latent flows in over the boundary,
+// the image flows back out, and MODEL routes through a SetNode/GetNode pair.
+// Inner links are OBJECT form (the real exports differ from top-level arrays).
+const SUBGRAPH_UUID = 'f642d79e-0000-4000-8000-000000000001';
+function makeSubgraphUi() {
+  return {
+    nodes: [
+      { id: 1, type: 'EmptySD3LatentImage', mode: 0, inputs: [], outputs: [{ name: 'LATENT', type: 'LATENT', links: [100] }], widgets_values: [640, 480, 1] },
+      { id: 2, type: SUBGRAPH_UUID, mode: 0, title: 'ENGINE', widgets_values: [],
+        inputs: [{ name: 'LATENT', type: 'LATENT', link: 100 }],
+        outputs: [{ name: 'IMAGE', type: 'IMAGE', links: [101] }] },
+      { id: 3, type: 'SaveImage', mode: 0, widgets_values: ['ComfyUI'],
+        inputs: [{ name: 'images', type: 'IMAGE', link: 101 }], outputs: [] }
+    ],
+    links: [[100, 1, 0, 2, 0, 'LATENT'], [101, 2, 0, 3, 0, 'IMAGE']],
+    definitions: { subgraphs: [{
+      id: SUBGRAPH_UUID, name: 'Engine',
+      inputNode: { id: -10 }, outputNode: { id: -20 },
+      inputs: [{ id: 'u-in', name: 'LATENT', type: 'LATENT', linkIds: [200] }],
+      outputs: [{ id: 'u-out', name: 'IMAGE', type: 'IMAGE', linkIds: [203] }],
+      widgets: [],
+      nodes: [
+        { id: 10, type: 'KSampler', mode: 0, widgets_values: [42, 'randomize', 8, 1, 'euler', 'simple', 0.5],
+          inputs: [{ name: 'latent_image', type: 'LATENT', link: 200 }, { name: 'model', type: 'MODEL', link: 204 }], outputs: [{ name: 'LATENT', type: 'LATENT', links: [201] }] },
+        { id: 11, type: 'VAEDecode', mode: 0, widgets_values: [],
+          inputs: [{ name: 'samples', type: 'LATENT', link: 201 }, { name: 'vae', type: 'VAE', link: 205 }], outputs: [{ name: 'IMAGE', type: 'IMAGE', links: [203] }] },
+        { id: 12, type: 'SetNode', mode: 0, title: 'Set_model', widgets_values: ['model'],
+          inputs: [{ name: 'MODEL', type: 'MODEL', link: 202 }], outputs: [{ name: '*', type: '*', links: null }] },
+        { id: 13, type: 'GetNode', mode: 0, title: 'Get_model', widgets_values: ['model'],
+          inputs: [], outputs: [{ name: 'MODEL', type: 'MODEL', links: [204] }] },
+        { id: 14, type: 'UNETLoader', mode: 0, widgets_values: ['x.safetensors', 'default'],
+          inputs: [], outputs: [{ name: 'MODEL', type: 'MODEL', links: [202] }] },
+        { id: 16, type: 'VAELoader', mode: 0, widgets_values: ['qwen_image_vae.safetensors'],
+          inputs: [], outputs: [{ name: 'VAE', type: 'VAE', links: [205] }] }
+      ],
+      links: [
+        { id: 200, origin_id: -10, origin_slot: 0, target_id: 10, target_slot: 0, type: 'LATENT' },
+        { id: 201, origin_id: 10, origin_slot: 0, target_id: 11, target_slot: 0, type: 'LATENT' },
+        { id: 202, origin_id: 14, origin_slot: 0, target_id: 12, target_slot: 0, type: 'MODEL' },
+        { id: 204, origin_id: 13, origin_slot: 0, target_id: 10, target_slot: 1, type: 'MODEL' },
+        { id: 205, origin_id: 16, origin_slot: 0, target_id: 11, target_slot: 1, type: 'VAE' },
+        { id: 203, origin_id: 11, origin_slot: 0, target_id: -20, target_slot: 0, type: 'IMAGE' }
+      ]
+    }] }
+  };
+}
+
+test('uiGraphToApi: subgraph instances flatten to instId:innerId, boundaries and Set/GetNode resolve', () => {
+  const api = core.uiGraphToApi(makeSubgraphUi(), OBJECT_INFO);
+  // inner nodes appear under flattened ids; virtual nodes never execute
+  assert.equal(api['2'], undefined);                              // the instance itself
+  assert.equal(api['2:12'], undefined);                           // SetNode
+  assert.equal(api['2:13'], undefined);                           // GetNode
+  assert.equal(api['2:10'].class_type, 'KSampler');
+  assert.equal(api['2:11'].class_type, 'VAEDecode');
+  // boundary input: outer latent reaches the inner sampler
+  assert.deepEqual(api['2:10'].inputs.latent_image, ['1', 0]);
+  // GetNode -> SetNode -> UNETLoader chain resolves to the real source
+  assert.deepEqual(api['2:10'].inputs.model, ['2:14', 0]);
+  // widgets still map positionally inside the subgraph (seed skips control_after_generate)
+  assert.equal(api['2:10'].inputs.seed, 42);
+  assert.equal(api['2:10'].inputs.steps, 8);
+  assert.equal(api['2:10'].inputs.denoise, 0.5);
+  // plain inner link
+  assert.deepEqual(api['2:11'].inputs.samples, ['2:10', 0]);
+  assert.deepEqual(api['2:11'].inputs.vae, ['2:16', 0]);
+  // boundary output: the outer SaveImage sees the inner decode
+  assert.deepEqual(api['3'].inputs.images, ['2:11', 0]);
+});
+
+test('uiGraphTypes: includes subgraph-inner types, excludes uuid/SetNode/GetNode virtuals', () => {
+  const types = core.uiGraphTypes(makeSubgraphUi());
+  for (const t of ['KSampler', 'VAEDecode', 'UNETLoader', 'VAELoader', 'EmptySD3LatentImage', 'SaveImage'])
+    assert.ok(types.includes(t), `missing ${t}`);
+  assert.ok(!types.includes(SUBGRAPH_UUID));
+  assert.ok(!types.includes('SetNode'));
+  assert.ok(!types.includes('GetNode'));
+});
+
+test('uiGraphToApi: Power Lora Loader object widgets become lora_N inputs', () => {
+  const ui = {
+    nodes: [
+      { id: 31, type: 'UNETLoader', mode: 0, inputs: [], outputs: [{ name: 'MODEL', type: 'MODEL', links: [300] }], widgets_values: ['x.safetensors', 'default'] },
+      { id: 30, type: 'Power Lora Loader (rgthree)', mode: 0,
+        widgets_values: [{}, { type: 'PowerLoraLoaderHeaderWidget' },
+          { on: true, lora: 'A.safetensors', strength: 1, strengthTwo: null },
+          { on: false, lora: 'B.safetensors', strength: 0.8 }, ''],
+        inputs: [{ name: 'model', type: 'MODEL', link: 300 }], outputs: [] }
+    ],
+    links: [[300, 31, 0, 30, 0, 'MODEL']]
+  };
+  const api = core.uiGraphToApi(ui, OBJECT_INFO);
+  assert.deepEqual(api['30'].inputs.model, ['31', 0]);
+  assert.deepEqual(api['30'].inputs.lora_1, { on: true, lora: 'A.safetensors', strength: 1, strengthTwo: null });
+  assert.deepEqual(api['30'].inputs.lora_2, { on: false, lora: 'B.safetensors', strength: 0.8 });
+  assert.equal(api['30'].inputs.lora_3, undefined);   // header/empty-string widgets are not loras
+});
+
+test('uiGraphToApi: named object widgets (VHS_VideoCombine style) map by name, UI-only keys dropped', () => {
+  const ui = {
+    nodes: [
+      { id: 1, type: 'EmptySD3LatentImage', mode: 0, inputs: [], outputs: [{ name: 'LATENT', type: 'LATENT', links: [] }], widgets_values: [64, 64, 1] },
+      { id: 2, type: 'VHS_VideoCombine', mode: 0,
+        widgets_values: { frame_rate: 24, loop_count: 0, filename_prefix: 'clip', format: 'video/h264-mp4',
+          pingpong: false, save_output: true, videopreview: { params: {} } },
+        inputs: [{ name: 'images', type: 'IMAGE', link: 40 }], outputs: [] }
+    ],
+    links: [[40, 1, 0, 2, 0, 'IMAGE']]
+  };
+  const api = core.uiGraphToApi(ui, OBJECT_INFO);
+  assert.deepEqual(api['2'].inputs.images, ['1', 0]);
+  assert.equal(api['2'].inputs.frame_rate, 24);
+  assert.equal(api['2'].inputs.loop_count, 0);
+  assert.equal(api['2'].inputs.filename_prefix, 'clip');
+  assert.equal(api['2'].inputs.format, 'video/h264-mp4');
+  assert.equal(api['2'].inputs.pingpong, false);
+  assert.equal(api['2'].inputs.save_output, true);
+  assert.equal(api['2'].inputs.videopreview, undefined);   // UI-only widget, not a server input
+});
+
+test('uiGraphToApi: widget-marked inputs define the widget order, beating spec order (dynamic widgets)', () => {
+  const ui = {
+    nodes: [
+      { id: 1, type: 'LoadImage', mode: 0, inputs: [], outputs: [{ name: 'IMAGE', type: 'IMAGE', links: [50] }], widgets_values: ['a.png'] },
+      { id: 2, type: 'ResizeImageMaskNode', mode: 0,
+        widgets_values: ['scale by multiplier', 0.5, 'area'],
+        inputs: [
+          { name: 'input', type: 'IMAGE', link: 50 },
+          { name: 'resize_type', type: 'COMBO', widget: { name: 'resize_type' }, link: null },
+          { name: 'resize_type.multiplier', type: 'FLOAT', widget: { name: 'resize_type.multiplier' }, link: null },
+          { name: 'scale_method', type: 'COMBO', widget: { name: 'scale_method' }, link: null }
+        ], outputs: [] }
+    ],
+    links: [[50, 1, 0, 2, 0, 'IMAGE']]
+  };
+  const api = core.uiGraphToApi(ui, OBJECT_INFO);
+  assert.deepEqual(api['2'].inputs.input, ['1', 0]);
+  assert.equal(api['2'].inputs.resize_type, 'scale by multiplier');
+  assert.equal(api['2'].inputs['resize_type.multiplier'], 0.5);
+  assert.equal(api['2'].inputs.scale_method, 'area');
+});
+
+test('uiGraphToApi: editor-panel nodes (Fast Groups Bypasser) are excluded; Reroute passes through', () => {
+  // the real Lustify Final carries a Fast Groups Bypasser — frontend-only
+  const lf = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'fixtures', 'Lustify Final.json'), 'utf8'));
+  assert.ok(!core.uiGraphTypes(lf).includes('Fast Groups Bypasser (rgthree)'));
+  // Reroute is likewise virtual: consumers see straight through it
+  const ui = {
+    nodes: [
+      { id: 1, type: 'EmptySD3LatentImage', mode: 0, inputs: [], outputs: [{ name: 'LATENT', type: 'LATENT', links: [60] }], widgets_values: [64, 64, 1] },
+      { id: 2, type: 'Reroute', mode: 0, widgets_values: [],
+        inputs: [{ name: '', type: '*', link: 60 }], outputs: [{ name: '', type: 'LATENT', links: [61] }] },
+      { id: 3, type: 'KSampler', mode: 0, widgets_values: [0, 'fixed', 4, 1, 'euler', 'simple', 1],
+        inputs: [{ name: 'latent_image', type: 'LATENT', link: 61 }], outputs: [] }
+    ],
+    links: [[60, 1, 0, 2, 0, 'LATENT'], [61, 2, 0, 3, 3, 'LATENT']]
+  };
+  const api = core.uiGraphToApi(ui, OBJECT_INFO);
+  assert.equal(api['2'], undefined);
+  assert.deepEqual(api['3'].inputs.latent_image, ['1', 0]);
+  assert.ok(!core.uiGraphTypes(ui).includes('Reroute'));
+});
+
+test('uiGraphToApi: real workflows convert with all wires pointing at existing nodes', () => {
+  const files = ['DR34ML4Y Img2Vid 2.0.json', 'Lustify Final.json', 'Lustify.json', 'Lustify_Final_img2img.json'];
+  for (const f of files) {
+    const g = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'fixtures', f), 'utf8'));
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+    for (const t of core.uiGraphTypes(g)) {
+      assert.ok(!UUID_RE.test(t), `${f}: subgraph uuid leaked into types: ${t}`);
+      assert.ok(t !== 'SetNode' && t !== 'GetNode', `${f}: virtual ${t} leaked into types`);
+    }
+    // stub /object_info: every named input is a connection — enough to check
+    // the wiring (widget mapping precision is covered by the synthetic tests)
+    const info = {};
+    for (const n of core.flattenUiGraph(g).nodes) {
+      info[n.type] = info[n.type] || { input: { required: {} } };
+      for (const inp of n.inputs || []) info[n.type].input.required[inp.name] = ['ANY', {}];
+    }
+    const api = core.uiGraphToApi(g, info);
+    assert.ok(Object.keys(api).length > 0, `${f}: conversion produced an empty graph`);
+    for (const [id, node] of Object.entries(api)) {
+      for (const [name, v] of Object.entries(node.inputs)) {
+        if (!Array.isArray(v)) continue;
+        assert.ok(api[v[0]], `${f}: node ${id} input "${name}" wired to missing node ${v[0]}`);
+      }
+    }
+  }
+});
+
+test('flattenUiGraph: DR34ML4Y exposes the subgraph seeds; Lustify exposes the First Pass sampler', () => {
+  const dr = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'fixtures', 'DR34ML4Y Img2Vid 2.0.json'), 'utf8'));
+  const drIds = new Set(core.flattenUiGraph(dr).nodes.map(n => n.id));
+  assert.ok(drIds.has('361:114') && drIds.has('361:115'), 'RandomNoise nodes inside the ENGINE subgraph');
+  const lf = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'fixtures', 'Lustify Final.json'), 'utf8'));
+  const lfIds = new Set(core.flattenUiGraph(lf).nodes.map(n => n.id));
+  assert.ok(lfIds.has('123:6'), 'KSampler inside First Pass');
+  assert.ok(lfIds.has('123:8'), 'CLIPTextEncode inside First Pass');
+});
+
+test('objectInfoRoute: encodes spaces/parens (rgthree names), rejects path-breaking names', () => {
+  assert.equal(core.objectInfoRoute('KSampler'), '/object_info/KSampler');
+  assert.equal(core.objectInfoRoute('Power Lora Loader (rgthree)'), '/object_info/Power%20Lora%20Loader%20(rgthree)');
+  assert.equal(core.objectInfoRoute('Seed (rgthree)'), '/object_info/Seed%20(rgthree)');
+  assert.throws(() => core.objectInfoRoute('a/b'), /node type/);
+  assert.throws(() => core.objectInfoRoute('a\\b'), /node type/);
+  assert.throws(() => core.objectInfoRoute(''), /node type/);
+  assert.throws(() => core.objectInfoRoute('bad\u0000name'), /node type/);
+});
+
+test('fetchTypeInfo + uiGraphToApi: real DR34ML4Y converts through a mocked /object_info server', async () => {
+  const graph = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'fixtures', 'DR34ML4Y Img2Vid 2.0.json'), 'utf8'));
+  // stub specs per type, served over real HTTP so URL encoding is exercised
+  // end-to-end — "Power Lora Loader (rgthree)" has spaces AND parens
+  const specs = {};
+  for (const n of core.flattenUiGraph(graph).nodes) {
+    specs[n.type] = specs[n.type] || { [n.type]: { input: { required: {} } } };
+    for (const inp of n.inputs || []) specs[n.type][n.type].input.required[inp.name] = ['ANY', {}];
+  }
+  const requested = [];
+  const server = http.createServer((req, res) => {
+    const m = req.url.match(/^\/object_info\/(.+)$/);
+    const type = m && decodeURIComponent(m[1]);
+    requested.push(type);
+    if (type && specs[type]) { res.end(JSON.stringify(specs[type])); }
+    else { res.statusCode = 404; res.end('{}'); }
+  });
+  await new Promise(r => server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const cache = new Map();
+    const info = await core.fetchTypeInfo(core.uiGraphTypes(graph), (route) => fetch(base + route), cache);
+    assert.ok(requested.includes('Power Lora Loader (rgthree)'), 'rgthree type reached the server intact');
+    assert.ok(requested.includes('Seed (rgthree)') || !core.uiGraphTypes(graph).includes('Seed (rgthree)'));
+    const api = core.uiGraphToApi(graph, info);
+    assert.equal(api['301'].class_type, 'Power Lora Loader (rgthree)');
+    assert.equal(api['301'].inputs.lora_1.lora, 'DR34ML4Y_LT3X_V3.safetensors');
+    assert.ok(api['361:114'] && api['361:115'], 'subgraph seeds survive the full path');
+    // second call hits the cache, not the server
+    const before = requested.length;
+    await core.fetchTypeInfo(core.uiGraphTypes(graph), (route) => fetch(base + route), cache);
+    assert.equal(requested.length, before, 'cached types are not re-fetched');
+  } finally { server.close(); }
+});
+
+test('fetchTypeInfo: a type the server does not provide throws with the type named', async () => {
+  const server = http.createServer((_req, res) => { res.statusCode = 404; res.end('{}'); });
+  await new Promise(r => server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    await assert.rejects(
+      () => core.fetchTypeInfo(['NopeNode'], (route) => fetch(base + route), new Map()),
+      /object_info NopeNode: HTTP 404/
+    );
+  } finally { server.close(); }
 });
 
 test('pickHistoryOutput: manifest output node pins the result; media filters; fallback flagged', () => {

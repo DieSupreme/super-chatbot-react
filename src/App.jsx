@@ -626,6 +626,13 @@ export default function App() {
   };
   function onImageAction(m, action) {
     if (!m) return;
+    // any still image can seed the video workflow: upload to ComfyUI's input
+    // folder and point the video panel's image control at it
+    if (action === 'use-start-image') {
+      if (!m.imagePath) { toast('No image file stored on this message', 'warn'); return; }
+      withSdControl({ media: 'video' }, 'comfyUseStartImage', c => c.comfyUseStartImage(m.imagePath));
+      return;
+    }
     const gp = m.genParams;
     // kind is the media; the producing backend decides where replays go.
     // Messages saved before `backend` existed: video was always ComfyUI,

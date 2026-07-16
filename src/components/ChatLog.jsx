@@ -254,6 +254,8 @@ function MessageBubble({ m, isLatestAi, isStreamingAny, onRetry, onRegenerate, o
             <button title="Load these settings into the panel" onClick={() => onImageAction(m, 'reuse-settings')}>⚙ Reuse settings</button>}
           <button onClick={() => onImageAction(m, 'img2img')}>→ img2img</button>
           <button onClick={() => onImageAction(m, 'inpaint')}>→ inpaint</button>
+          <button title="Upload to ComfyUI and use as the video start image"
+            onClick={() => onImageAction(m, 'use-start-image')}>🎬 start image</button>
         </div>
       )}
     </div>

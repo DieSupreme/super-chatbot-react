@@ -1,6 +1,8 @@
 export function createMockApi() {
   const calls = [];
   const savedConvos = {};
+  const presetStore = {};   // workflow -> [{ name, values }], mirrors prompt-presets.json
+  const valuesStore = {};   // workflow -> { key: value }, mirrors control-values.json
   let chunkCb = null;
   const tick = (ms = 25) => new Promise(r => setTimeout(r, ms));
 
@@ -122,7 +124,56 @@ export function createMockApi() {
         return { ok: true, files: [{ path: 'D:\\Devlopment\\AI\\IMG\\vid-1.mp4', name: 'vid-1.mp4' }], seed: 99, elapsed: 3.2 };
       },
       interrupt: async () => ({ ok: true }),
+      cancel: async () => { calls.push(['comfy:cancel']); return { ok: true, interrupted: true, cleared: false }; },
+      free: async () => { calls.push(['comfy:free']); return { ok: true }; },
+      uploadImage: async (p) => { calls.push(['comfy:uploadImage', p]); return { ok: true, name: 'up.png' }; },
+      onPreview: () => () => {},
       readVideo: async () => ({ ok: true, b64: 'AAAA', mime: 'video/mp4' }),
+      rebuildManifests: async () => {
+        calls.push(['comfy:rebuildManifests']);
+        return { ok: true, results: [], list: (await api.comfy.workflows()).list };
+      },
+      setControlOverride: async (p) => {
+        calls.push(['comfy:setControlOverride', p]);
+        return { ok: true, list: (await api.comfy.workflows()).list };
+      },
+      values: async (workflow) => {
+        calls.push(['comfy:values', workflow]);
+        return { ok: true, values: valuesStore[workflow] || {} };
+      },
+      valuesSave: async (p) => {
+        calls.push(['comfy:valuesSave', p]);
+        valuesStore[p.workflow] = { ...p.values };
+        return { ok: true };
+      },
+      valuesClear: async (workflow) => {
+        calls.push(['comfy:valuesClear', workflow]);
+        delete valuesStore[workflow];
+        return { ok: true };
+      },
+      presets: async (workflow) => {
+        calls.push(['comfy:presets', workflow]);
+        return { ok: true, presets: presetStore[workflow] || [] };
+      },
+      presetSave: async (p) => {
+        calls.push(['comfy:presetSave', p]);
+        const list = presetStore[p.workflow] = presetStore[p.workflow] || [];
+        const ex = list.find(x => x.name === p.name);
+        if (ex) ex.values = p.values; else list.push({ name: p.name, values: p.values });
+        return { ok: true, presets: list };
+      },
+      presetRename: async (p) => {
+        calls.push(['comfy:presetRename', p]);
+        const list = presetStore[p.workflow] || [];
+        const x = list.find(y => y.name === p.oldName);
+        if (x) x.name = p.newName;
+        return { ok: true, presets: list };
+      },
+      presetDelete: async (p) => {
+        calls.push(['comfy:presetDelete', p]);
+        presetStore[p.workflow] = (presetStore[p.workflow] || []).filter(x => x.name !== p.name);
+        return { ok: true, presets: presetStore[p.workflow] };
+      },
       onProgress: () => () => {},
       onLog: () => () => {},
       onStatus: () => () => {}
@@ -144,5 +195,5 @@ export function createMockApi() {
     }
   };
 
-  return { api, calls, savedConvos, tick };
+  return { api, calls, savedConvos, presetStore, valuesStore, tick };
 }
