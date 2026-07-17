@@ -29,11 +29,15 @@ test('buildManifest: DR34ML4Y img2vid — subgraph seeds, titled constants, lora
   // prompts: positive by title, negative by title/wordlist
   assert.deepEqual([c.prompt.node, c.prompt.input, c.prompt.type], ['121', 'text', 'textarea']);
   assert.deepEqual([c.negative.node, c.negative.input], ['110', 'text']);
-  // both RandomNoise seeds inside the ENGINE subgraph, multi-target form
+  // both RandomNoise seeds inside the ENGINE subgraph carry DIFFERENT stored
+  // values (420 vs 43 — deliberately decorrelated noise streams), so they
+  // split into per-pass controls instead of being patched together
   assert.equal(c.seed.type, 'seed');
-  assert.deepEqual(c.seed.targets, [
-    { node: '361:114', input: 'noise_seed' }, { node: '361:115', input: 'noise_seed' }
-  ]);
+  assert.deepEqual([c.seed.node, c.seed.input, c.seed.default], ['361:115', 'noise_seed', 43]);
+  assert.equal(c.seed.label, 'Seed (main pass)');
+  assert.deepEqual([c.seed_2.node, c.seed_2.input, c.seed_2.default, c.seed_2.type],
+    ['361:114', 'noise_seed', 420, 'seed']);
+  assert.equal(c.seed_2.label, 'Seed (refine pass)');
   // titled INTConstants beat the link-driven EmptyLTXVLatentVideo
   assert.deepEqual([c.width.node, c.width.input, c.width.default], ['292', 'value', 512]);
   assert.deepEqual([c.height.node, c.height.default], ['293', 704]);
@@ -183,10 +187,10 @@ test('buildManifest: Lustify Final — PrimitiveStringMultiline prompt, subgraph
   // CLIPTextEncode and the enhancer's "System Prompt" inside the subgraph
   assert.deepEqual([c.prompt.node, c.prompt.input, c.prompt.type], ['119', 'value', 'textarea']);
   assert.equal(c.negative, undefined);                             // negatives are zeroed-out, not text
-  // both static seeds: the Second Pass sampler (subgraph) and the rgthree Seed
-  assert.deepEqual(c.seed.targets, [
-    { node: '157:150', input: 'seed' }, { node: '12', input: 'seed' }
-  ]);
+  // both static seeds: the Second Pass sampler (subgraph) and the rgthree
+  // Seed hold different values, so each pass gets its own seed control
+  assert.deepEqual([c.seed.node, c.seed.input, c.seed.type], ['12', 'seed', 'seed']);
+  assert.deepEqual([c.seed_2.node, c.seed_2.input, c.seed_2.type], ['157:150', 'seed', 'seed']);
   assert.deepEqual([c.width.node, c.width.input, c.width.default], ['11', 'width', 1152]);
   assert.deepEqual([c.height.node, c.height.input, c.height.default], ['11', 'height', 1536]);
   assert.deepEqual([c.enable_prompt_enhancer.node, c.enable_prompt_enhancer.type], ['121', 'checkbox']);
@@ -203,7 +207,9 @@ test('buildManifest: Lustify (simple, no subgraphs) — both KSampler seeds, SD3
   const c = m.controls;
   assert.deepEqual([c.prompt.node, c.prompt.input], ['198', 'text']);
   assert.equal(c.negative, undefined);
-  assert.deepEqual(c.seed.targets, [{ node: '201', input: 'seed' }, { node: '207', input: 'seed' }]);
+  // different stored seed values -> one control per sampling pass
+  assert.deepEqual([c.seed.node, c.seed.input], ['201', 'seed']);
+  assert.deepEqual([c.seed_2.node, c.seed_2.input], ['207', 'seed']);
   assert.deepEqual([c.width.node, c.width.default, c.height.default], ['200', 1216, 832]);
 });
 
@@ -213,7 +219,7 @@ test('buildManifest: Lustify img2img — adds the LoadImage select and the img2i
   assert.deepEqual([c.image.node, c.image.input, c.image.type], ['211', 'image', 'select']);
   assert.equal(c.image.options_from, 'object_info:LoadImage:image');
   assert.deepEqual([c.use_img2img.node, c.use_img2img.type, c.use_img2img.default], ['214', 'checkbox', false]);
-  assert.deepEqual([c.prompt.node, c.seed.targets.length], ['119', 2]);   // shared base intact
+  assert.deepEqual([c.prompt.node, c.seed.node, c.seed_2.node], ['119', '12', '157:150']);   // shared base intact
 });
 
 // ---------- ensureManifests: the scan-path hook ----------
@@ -300,23 +306,23 @@ const objectInfo = JSON.parse(fixture('object-info.json'));
 test('generic extraction: the default VISIBLE set is identical to the curated one, with and without specs', () => {
   const expected = {
     'DR34ML4Y Img2Vid 2.0.json': [
-      'prompt', 'negative', 'seed', 'width', 'height', 'length', 'fps', 'image', 't2v_mode',
+      'prompt', 'negative', 'seed', 'seed_2', 'width', 'height', 'length', 'fps', 'image', 't2v_mode',
       'lora', 'lora_strength', 'lora_on', 'lora_2', 'lora_2_strength',
       'vae', 'vae_2', 'vae_3', 'upscale_model', 'text_encoder', 'text_encoder_2', 'model',
       'cfg', 'sampler', 'sampler_2', 'sigmas', 'sigmas_2', 'sigmas_3', 'i2v_strength',
       'format', 'trim_to_audio'
     ],
     'Lustify Final.json': [
-      'prompt', 'seed', 'width', 'height',
+      'prompt', 'seed', 'seed_2', 'width', 'height',
       'add_lora_trigger_to_enhanced_prompt', 'enable_prompt_enhancer',
       'model', 'upscale_model', 'text_encoder', 'vae', 'cfg', 'sampler'
     ],
     'Lustify.json': [
-      'prompt', 'seed', 'width', 'height',
+      'prompt', 'seed', 'seed_2', 'width', 'height',
       'model', 'text_encoder', 'vae', 'upscale_model', 'cfg', 'sampler'
     ],
     'Lustify_Final_img2img.json': [
-      'prompt', 'seed', 'width', 'height', 'image',
+      'prompt', 'seed', 'seed_2', 'width', 'height', 'image',
       'add_lora_trigger_to_enhanced_prompt', 'enable_prompt_enhancer', 'use_img2img',
       'model', 'upscale_model', 'text_encoder', 'vae', 'cfg', 'sampler'
     ]

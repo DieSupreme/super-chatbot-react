@@ -13,18 +13,22 @@
       "node_title": ""
     },
     "seed": {
-      "targets": [
-        {
-          "node": "201",
-          "input": "seed"
-        },
-        {
-          "node": "207",
-          "input": "seed"
-        }
-      ],
+      "node": "201",
+      "input": "seed",
       "type": "seed",
       "group": "Basic",
+      "default": 163614179830791,
+      "label": "Seed (main pass)",
+      "node_type": "KSampler",
+      "node_title": ""
+    },
+    "seed_2": {
+      "node": "207",
+      "input": "seed",
+      "type": "seed",
+      "group": "Basic",
+      "default": 958828395584512,
+      "label": "Seed (refine pass)",
       "node_type": "KSampler",
       "node_title": ""
     },

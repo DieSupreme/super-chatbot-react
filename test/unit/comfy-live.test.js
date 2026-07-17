@@ -43,6 +43,52 @@ test('parseBinaryPreview: jpeg and png frames decode; other events and runts ret
   assert.equal(core.parseBinaryPreview(null), null);
 });
 
+// ---------- preview frame throttle ----------
+// Frames flood in at sampler rate; at most one per window may cross IPC, and
+// the one that crosses must be the NEWEST (a trailing send after the window),
+// never an early frame with later ones silently dropped.
+test('latestFrameThrottle: first frame immediate, burst collapses to the newest via trailing send', () => {
+  let t = 1000;
+  const timers = [];
+  const sent = [];
+  const push = core.latestFrameThrottle((f) => sent.push(f), 250, {
+    now: () => t,
+    setTimer: (fn, d) => { timers.push({ fn, d }); return timers.length; },
+    clearTimer: () => {}
+  });
+  push('A');                       // quiet line -> straight through
+  assert.deepEqual(sent, ['A']);
+  t += 50; push('B');              // inside the window -> pending
+  t += 50; push('C');              // newer replaces B — B must never be seen
+  assert.deepEqual(sent, ['A']);
+  assert.equal(timers.length, 1);
+  assert.equal(timers[0].d, 200);  // fires when A's window closes
+  t += 150; timers[0].fn();        // trailing send delivers the LATEST
+  assert.deepEqual(sent, ['A', 'C']);
+  t += 300; push('D');             // next quiet frame -> immediate again
+  assert.deepEqual(sent, ['A', 'C', 'D']);
+});
+
+test('latestFrameThrottle: close() cancels the trailing send; null frames are ignored', () => {
+  let t = 0, cleared = 0;
+  const sent = [];
+  let timer = null;
+  const push = core.latestFrameThrottle((f) => sent.push(f), 250, {
+    now: () => t,
+    setTimer: (fn) => { timer = fn; return 1; },
+    clearTimer: () => { cleared++; }
+  });
+  push(null);                      // malformed/absent frame — no crash, nothing sent
+  push('A');
+  t += 10; push('B');
+  push.close();                    // job ended — the pending B must die with it
+  assert.equal(cleared, 1);
+  if (timer) timer();              // even if the timer somehow fires, closed wins
+  assert.deepEqual(sent, ['A']);
+  push('C');                       // after close nothing flows
+  assert.deepEqual(sent, ['A']);
+});
+
 // ---------- WS binary delivery ----------
 const wsAccept = (key) => crypto.createHash('sha1')
   .update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');

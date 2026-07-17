@@ -1,5 +1,5 @@
 {
-  "label": "DR34ML4Y Img2Vid 2.0",
+  "label": "DR34ML3Y Vid",
   "backend": "comfy",
   "media": "video",
   "output": "140",
@@ -97,7 +97,7 @@
       "input": "image",
       "type": "select",
       "options_from": "object_info:LoadImage:image",
-      "default": "ComfyUI_00042_.png",
+      "default": "test.png",
       "group": "Basic",
       "label": "START IMAGE (load your image here)",
       "node_type": "LoadImage",
@@ -114,40 +114,6 @@
       "node_title": "T2V MODE (False=image mode)"
     },
     "lora": {
-      "node": "301",
-      "input": "lora_1.lora",
-      "type": "select",
-      "options_from": "object_info:LoraLoaderModelOnly:lora_name",
-      "default": "DR34ML4Y_LT3X_V3.safetensors",
-      "group": "LoRA",
-      "label": "YOUR LORA (DR34ML4Y here)",
-      "node_type": "Power Lora Loader (rgthree)",
-      "node_title": "YOUR LORA (DR34ML4Y here)"
-    },
-    "lora_strength": {
-      "node": "301",
-      "input": "lora_1.strength",
-      "type": "float",
-      "default": 1,
-      "min": 0,
-      "max": 2,
-      "step": 0.05,
-      "group": "LoRA",
-      "label": "YOUR LORA (DR34ML4Y here) strength",
-      "node_type": "Power Lora Loader (rgthree)",
-      "node_title": "YOUR LORA (DR34ML4Y here)"
-    },
-    "lora_on": {
-      "node": "301",
-      "input": "lora_1.on",
-      "type": "checkbox",
-      "default": true,
-      "group": "LoRA",
-      "label": "YOUR LORA (DR34ML4Y here) on",
-      "node_type": "Power Lora Loader (rgthree)",
-      "node_title": "YOUR LORA (DR34ML4Y here)"
-    },
-    "lora_2": {
       "node": "134",
       "input": "lora_name",
       "type": "select",
@@ -158,7 +124,7 @@
       "node_type": "LoraLoaderModelOnly",
       "node_title": "DISTILL LORA (strength 0.3)"
     },
-    "lora_2_strength": {
+    "lora_strength": {
       "node": "134",
       "input": "strength_model",
       "type": "float",
@@ -242,7 +208,7 @@
       "input": "unet_name",
       "type": "select",
       "options_from": "object_info:UnetLoaderGGUF:unet_name",
-      "default": "ltx-2.3-22b-dev-Q3_K_M.gguf",
+      "default": "ltx-2.3-22b-dev-Q4_K_M.gguf",
       "group": "Models",
       "label": "MODEL (dev GGUF)",
       "node_type": "UnetLoaderGGUF",
@@ -868,10 +834,113 @@
       "group": "LTX2SamplingPreviewOverride",
       "node_type": "LTX2SamplingPreviewOverride",
       "node_title": ""
+    },
+    "your_lora_lora_name": {
+      "node": "301",
+      "input": "lora_name",
+      "type": "select",
+      "options_from": "object_info:LTX2LoraLoaderAdvanced:lora_name",
+      "tooltip": "The name of the LoRA.",
+      "default": "DR34ML4Y_LT3X_V3.safetensors",
+      "hidden": true,
+      "label": "Lora name",
+      "group": "YOUR LORA (video only audio str 0)",
+      "node_type": "LTX2LoraLoaderAdvanced",
+      "node_title": "YOUR LORA (video only audio str 0)"
+    },
+    "your_lora_strength_model": {
+      "node": "301",
+      "input": "strength_model",
+      "type": "float",
+      "min": -100,
+      "max": 100,
+      "step": 0.01,
+      "tooltip": "How strongly to modify the diffusion model. This value can be negative.",
+      "default": 1,
+      "hidden": true,
+      "label": "Strength model",
+      "group": "YOUR LORA (video only audio str 0)",
+      "node_type": "LTX2LoraLoaderAdvanced",
+      "node_title": "YOUR LORA (video only audio str 0)"
+    },
+    "your_lora_video": {
+      "node": "301",
+      "input": "video",
+      "type": "float",
+      "min": 0,
+      "max": 1,
+      "step": 0.01,
+      "tooltip": "Strength for video attention layers.",
+      "default": 1,
+      "hidden": true,
+      "label": "Video",
+      "group": "YOUR LORA (video only audio str 0)",
+      "node_type": "LTX2LoraLoaderAdvanced",
+      "node_title": "YOUR LORA (video only audio str 0)"
+    },
+    "your_lora_video_to_audio": {
+      "node": "301",
+      "input": "video_to_audio",
+      "type": "float",
+      "min": 0,
+      "max": 1,
+      "step": 0.01,
+      "tooltip": "Strength for video to audio cross-attention layers.",
+      "default": 0,
+      "hidden": true,
+      "label": "Video to audio",
+      "group": "YOUR LORA (video only audio str 0)",
+      "node_type": "LTX2LoraLoaderAdvanced",
+      "node_title": "YOUR LORA (video only audio str 0)"
+    },
+    "your_lora_audio": {
+      "node": "301",
+      "input": "audio",
+      "type": "float",
+      "min": 0,
+      "max": 1,
+      "step": 0.01,
+      "tooltip": "Strength for audio attention layers.",
+      "default": 0,
+      "hidden": true,
+      "label": "Audio",
+      "group": "YOUR LORA (video only audio str 0)",
+      "node_type": "LTX2LoraLoaderAdvanced",
+      "node_title": "YOUR LORA (video only audio str 0)"
+    },
+    "your_lora_audio_to_video": {
+      "node": "301",
+      "input": "audio_to_video",
+      "type": "float",
+      "min": 0,
+      "max": 1,
+      "step": 0.01,
+      "tooltip": "Strength for audio to video cross-attention layers.",
+      "default": 0,
+      "hidden": true,
+      "label": "Audio to video",
+      "group": "YOUR LORA (video only audio str 0)",
+      "node_type": "LTX2LoraLoaderAdvanced",
+      "node_title": "YOUR LORA (video only audio str 0)"
+    },
+    "your_lora_other": {
+      "node": "301",
+      "input": "other",
+      "type": "float",
+      "min": 0,
+      "max": 1,
+      "step": 0.01,
+      "tooltip": "Strength for layers not caught by other layer filters.",
+      "default": 1,
+      "hidden": true,
+      "label": "Other",
+      "group": "YOUR LORA (video only audio str 0)",
+      "node_type": "LTX2LoraLoaderAdvanced",
+      "node_title": "YOUR LORA (video only audio str 0)"
     }
   },
   "generated": {
-    "sourceHash": "sha256:f4d0c24e5a83aa74fae24ae3712058f3fe9ffc6cb9c09ee63433e70c180395b0",
+    "sourceHash": "sha256:fcfaf8d17844722eb7f9d25f442ea980d2551e3a0952763940980341d2619228",
     "withInfo": true
   }
 }

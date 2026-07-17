@@ -14,18 +14,22 @@
       "node_title": "User Prompt"
     },
     "seed": {
-      "targets": [
-        {
-          "node": "157:150",
-          "input": "seed"
-        },
-        {
-          "node": "12",
-          "input": "seed"
-        }
-      ],
+      "node": "12",
+      "input": "seed",
       "type": "seed",
       "group": "Basic",
+      "default": 158883935434851,
+      "label": "Seed (main pass)",
+      "node_type": "Seed (rgthree)",
+      "node_title": ""
+    },
+    "seed_2": {
+      "node": "157:150",
+      "input": "seed",
+      "type": "seed",
+      "group": "Basic",
+      "default": 15606,
+      "label": "Seed (refine pass)",
       "node_type": "KSampler",
       "node_title": ""
     },

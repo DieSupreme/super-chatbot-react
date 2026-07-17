@@ -514,7 +514,9 @@ export default function ComfyBody({ media = 'video', workflow: pinnedWf, onToast
       const deliver = outMedia === 'image' ? onImage : onVideo;
       const genParams = {
         workflow, backend: 'comfy', mode: outMedia,
-        values: { ...vals, ...(r.seed != null ? { seed: r.seed } : {}) }
+        // r.seeds carries EVERY realized seed control (a workflow can have
+        // several); the single r.seed stays as the legacy fallback
+        values: { ...vals, ...(r.seeds || (r.seed != null ? { seed: r.seed } : {})) }
       };
       for (const f of r.files) deliver({
         path: f.path, name: f.name, prompt: promptText, seed: r.seed, elapsed: r.elapsed, genParams
@@ -577,11 +579,17 @@ export default function ComfyBody({ media = 'video', workflow: pinnedWf, onToast
         if (!gp || !gp.workflow) { onToast('This result has no stored settings to replay', 'warn'); return; }
         if (statusRef.current !== 'running') { onToast('Start ComfyUI first, then regenerate', 'warn'); return; }
         if (busyRef.current) { onToast('A generation is already running', 'warn'); return; }
-        if (!workflows.some(w => w.name === gp.workflow)) {
+        const rwf = workflows.find(w => w.name === gp.workflow);
+        if (!rwf) {
           onToast(`Workflow "${gp.workflow}" is no longer in workflows/`, 'warn'); return;
         }
         const vals = { ...gp.values };
-        if ('seed' in vals && !opts.keepSeed) vals.seed = -1;
+        // a fresh roll resets EVERY seed-type control, not just "seed"
+        if (!opts.keepSeed) {
+          for (const [k, c] of Object.entries(rwf.controls || {})) {
+            if (c.type === 'seed' && k in vals) vals[k] = -1;
+          }
+        }
         runGeneration(gp.workflow, vals, String(vals.prompt || gp.workflow));
       },
       comfyLoadSettings: (gp) => {

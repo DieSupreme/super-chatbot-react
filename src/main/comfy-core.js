@@ -123,6 +123,92 @@ function patchWorkflow(graph, manifest, values) {
   return out;
 }
 
+// ---------- fidelity: only patch what the user changed ----------
+// The renderer sends its WHOLE control state (manifest defaults + draft +
+// edits). Patching all of it would rewrite every mapped input with values
+// captured at scan time — any skew between manifest and file (or a stale
+// draft) silently changes the graph. Dropping entries strictly equal to the
+// control's manifest default means untouched widgets pass through the
+// workflow file byte-identical. Controls without a default (prompt, seed)
+// always pass; readonly controls are patched from the manifest by
+// patchWorkflow regardless of what's sent, so dropping them here is safe.
+function pruneUnchangedValues(vals, controls) {
+  const out = {};
+  for (const [k, v] of Object.entries(vals || {})) {
+    const ctl = controls && controls[k];
+    // seed controls are never pruned: their value is realized at generate
+    // time (-1 = random), so "equals the default" doesn't mean "untouched"
+    if (ctl && ctl.type !== 'seed' && ctl.default !== undefined && v === ctl.default) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+// ---------- fidelity: dry run + diff ----------
+// The permanent divergence detector: what would the app POST for this
+// workflow, and how does that differ from a pure conversion of the raw
+// .json with no app patching? Every diff entry is annotated with the
+// manifest control that caused it — an entry WITHOUT a control key is an
+// unexplained divergence, i.e. a bug.
+function diffApiGraphs(before, after) {
+  const diffs = [];
+  for (const id of new Set([...Object.keys(before || {}), ...Object.keys(after || {})])) {
+    const a = before[id], b = after[id];
+    if (!a || !b) {
+      diffs.push({ node: id, input: null, from: a ? 'node present' : 'node missing', to: b ? 'node present' : 'node missing' });
+      continue;
+    }
+    for (const k of new Set([...Object.keys(a.inputs || {}), ...Object.keys(b.inputs || {})])) {
+      const va = (a.inputs || {})[k], vb = (b.inputs || {})[k];
+      if (JSON.stringify(va) !== JSON.stringify(vb)) {
+        diffs.push({ node: id, class_type: (b.class_type || a.class_type), input: k, from: va, to: vb });
+      }
+    }
+  }
+  return diffs;
+}
+
+// Wired inputs whose source can't be resolved (muted/bypassed with nothing to
+// forward, broken Set/Get pair, unconnected subgraph boundary). The converter
+// omits these — the server then runs the node's DEFAULT for an optional
+// input, which is a silent fidelity change. Surfaced here so the dry run can
+// report them.
+function listDroppedWires(graph) {
+  const { nodes, resolve } = flattenUiGraph(graph);
+  const dropped = [];
+  for (const n of nodes) {
+    for (const inp of n.inputs || []) {
+      if (inp.link != null && !resolve(inp.link)) {
+        dropped.push({ node: n.id, class_type: n.type, input: inp.name, type: inp.type });
+      }
+    }
+  }
+  return dropped;
+}
+
+// values must already be pruned/realized exactly as the generate path does —
+// the caller (comfy.js) shares that code so the dry run can never drift from
+// the real POST. info: merged /object_info (required for UI-format graphs).
+function dryRunGraph(graph, manifest, values, info) {
+  const ui = isUiGraph(graph);
+  const pure = ui ? uiGraphToApi(graph, info) : JSON.parse(JSON.stringify(graph));
+  const patched = patchWorkflow(pure, manifest, values || {});
+  // target -> control key (dotted Power-Lora inputs land on the parent object)
+  const byTarget = new Map();
+  for (const [key, ctl] of Object.entries((manifest && manifest.controls) || {})) {
+    for (const t of ctl.targets || [{ node: ctl.node, input: ctl.input }]) {
+      byTarget.set(t.node + ':' + t.input, key);
+      const dot = String(t.input).indexOf('.');
+      if (dot > 0) byTarget.set(t.node + ':' + t.input.slice(0, dot), key);
+    }
+  }
+  const diff = diffApiGraphs(pure, patched).map(d => {
+    const key = byTarget.get(d.node + ':' + d.input);
+    return key ? { ...d, control: key } : d;
+  });
+  return { pure, patched, diff, droppedWires: ui ? listDroppedWires(graph) : [] };
+}
+
 // ---------- output naming ----------
 // <prefix>-YYYYMMDD-HHMMSS-<seed>.<ext>, suffixed -2, -3… on collision — the
 // same convention as sd-core.imageFileName. vid-* for video workflows,
@@ -305,10 +391,17 @@ function uiGraphToApi(graph, info) {
       name === 'seed' || name === 'noise_seed';
     const widgetIns = (n.inputs || []).filter(i => i.widget);
     if (wv && typeof wv === 'object' && !Array.isArray(wv)) {
-      // 1) named object (VHS_VideoCombine): copy spec-known widget keys;
-      // UI-only extras (videopreview) never reach the server
-      for (const [name, spec] of Object.entries(specs)) {
-        if (isWidgetSpec(spec) && wv[name] !== undefined && inputs[name] === undefined) inputs[name] = wv[name];
+      // 1) named object (VHS_VideoCombine): copy every primitive widget value.
+      // The static spec does NOT list dynamic per-format widgets (crf,
+      // save_metadata, trim_to_audio only exist once format=h264-mp4), yet
+      // the browser sends them and VHS consumes them — dropping them would
+      // silently re-encode with defaults. UI-only extras are object-valued
+      // (videopreview) and connection-typed spec entries are wires, so both
+      // stay out.
+      for (const [name, v] of Object.entries(wv)) {
+        if (inputs[name] !== undefined || v === null || v === undefined || typeof v === 'object') continue;
+        if (specs[name] && !isWidgetSpec(specs[name])) continue;
+        inputs[name] = v;
       }
     } else if (widgetIns.length) {
       // 2) widget-marked input entries carry the widget ORDER (dynamic-widget
@@ -588,15 +681,27 @@ function extractControls({ nodes, resolve }, info) {
   if (poss[0]) put('prompt', { node: poss[0].n.id, input: poss[0].input, type: 'textarea', group: 'Basic' }, poss[0].n);
   if (negs[0]) put('negative', { node: negs[0].n.id, input: negs[0].input, type: 'textarea', group: 'Basic' }, negs[0].n);
 
-  // ---- seed: every static seed widget, patched together for reproducibility
+  // ---- seed: every static seed widget. Identical stored values move
+  // together as ONE control (reproducible with a single number); DIFFERING
+  // values mean the workflow deliberately decorrelates its noise streams
+  // (e.g. separate video and audio passes) — merging them would patch one
+  // seed into both and make browser-parity impossible, so they split into
+  // per-pass controls exactly like cfg/sigmas (each realized independently
+  // at generate time).
   const SEED_FIELDS = { RandomNoise: 'noise_seed', KSampler: 'seed', 'Seed (rgthree)': 'seed' };
-  const seeds = [];
+  const seedItems = [];
   for (const n of nodes) {
     const f = SEED_FIELDS[n.type];
-    if (f && !widgetLinked(n, f) && typeof wval(n, 0) === 'number') seeds.push({ node: n.id, input: f });
+    if (f && !widgetLinked(n, f) && typeof wval(n, 0) === 'number')
+      seedItems.push({ n, input: f, value: wval(n, 0) });
   }
-  if (seeds.length === 1) controls.seed = { node: seeds[0].node, input: seeds[0].input, type: 'seed', group: 'Basic' };
-  else if (seeds.length) controls.seed = { targets: seeds, type: 'seed', group: 'Basic' };
+  if (seedItems.length === 1) {
+    controls.seed = { node: seedItems[0].n.id, input: seedItems[0].input, type: 'seed', group: 'Basic' };
+  } else if (seedItems.length && seedItems.every(it => it.value === seedItems[0].value)) {
+    controls.seed = { targets: seedItems.map(it => ({ node: it.n.id, input: it.input })), type: 'seed', group: 'Basic' };
+  } else if (seedItems.length) {
+    emitPer('seed', 'Seed', seedItems, { type: 'seed', group: 'Basic' });
+  }
 
   // ---- resolution: titled INT constants are the user-facing knobs and win
   // over latent nodes (whose size inputs are usually link-driven plumbing)
@@ -1143,6 +1248,37 @@ function parseBinaryPreview(buf) {
   };
 }
 
+// ---------- preview frame throttle ----------
+// Sampler frame rate would flood IPC; forward at most one frame per interval
+// but ALWAYS end on the newest one: a frame arriving inside the window
+// replaces the pending one (older frames are stale — only the latest matters)
+// and a trailing timer delivers it when the window closes. Timers are
+// injectable for tests. close() cancels the trailing send at job end.
+function latestFrameThrottle(send, ms = 250, { setTimer = setTimeout, clearTimer = clearTimeout, now = Date.now } = {}) {
+  let last = -Infinity, pending = null, timer = null, closed = false;
+  const fire = () => {
+    timer = null;
+    if (closed || !pending) return;
+    const p = pending;
+    pending = null;
+    last = now();
+    send(p);
+  };
+  const push = (frame) => {
+    if (closed || !frame) return;
+    const t = now();
+    if (!timer && t - last >= ms) { last = t; send(frame); return; }
+    pending = frame;                                  // newest replaces older
+    if (!timer) timer = setTimer(fire, Math.max(0, ms - (t - last)));
+  };
+  push.close = () => {
+    closed = true;
+    pending = null;
+    if (timer) { try { clearTimer(timer); } catch (_) {} timer = null; }
+  };
+  return push;
+}
+
 // ---------- reconnect with backoff ----------
 // Keeps a receive-only socket alive across server hiccups while active()
 // holds — generation uses it so progress/preview survive a ComfyUI restart
@@ -1300,5 +1436,6 @@ module.exports = {
   readControlValues, saveControlValues, clearControlValues, pruneControlValues,
   mediaFileName, videoFileName, objectInfoOptions, objectInfoRoute, fetchTypeInfo,
   openWs, openNativeWs, openManualWs, openWsWithRetry,
-  parseBinaryPreview, cancelAll, uploadImage
+  parseBinaryPreview, latestFrameThrottle, cancelAll, uploadImage,
+  pruneUnchangedValues, diffApiGraphs, listDroppedWires, dryRunGraph
 };

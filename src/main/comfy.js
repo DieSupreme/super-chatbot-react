@@ -53,6 +53,7 @@ function registerComfyIpc(app, getWin) {
   let status = 'stopped';           // 'stopped' | 'starting' | 'running'
   let startTimer = null;
   let jobActive = false;
+  let previewHintShown = false;     // the no-preview-frames nudge logs once per session
   const logRing = [];
 
   function setStatus(next, message) {
@@ -232,7 +233,12 @@ function registerComfyIpc(app, getWin) {
     try {
       const wf = String(workflow || '');
       const controls = manifestControls(wf);
-      const vals = controls ? core.pruneControlValues(values || {}, controls) : (values || {});
+      // stale keys drop, and so do values equal to the manifest default — the
+      // draft only pins DELIBERATE deviations, so editing the workflow .json
+      // later can never be shadowed by defaults captured at draft-save time
+      const vals = controls
+        ? core.pruneUnchangedValues(core.pruneControlValues(values || {}, controls), controls)
+        : (values || {});
       const { error } = core.saveControlValues(workflowsDir, wf, vals);
       if (error) pushLog('[app] ' + error);
       return { ok: true };
@@ -308,7 +314,11 @@ function registerComfyIpc(app, getWin) {
     if (jobActive) return { ok: false, error: 'a generation is already running' };
     jobActive = true;
     const t0 = Date.now();
-    let ws = null, poll = null;
+    let ws = null, poll = null, sendPreview = null;
+    // per-job preview evidence: frames received off the socket vs forwarded
+    // to the renderer (throttled), plus whether sampling progress ever ran —
+    // that combination decides the one-time "server sends no previews" hint
+    const previewStats = { received: 0, forwarded: 0, bytes: 0, sampled: false };
     try {
       let { graph, manifest } = core.loadWorkflow(workflowsDir, workflow);
       // UI-format export (ComfyUI's default Ctrl+S)? Convert to API format
@@ -321,14 +331,22 @@ function registerComfyIpc(app, getWin) {
         graph = core.uiGraphToApi(graph, info);
         pushLog(`[app] UI-format workflow converted to API format (${Object.keys(graph).length} active nodes)`);
       }
-      const vals = { ...values };
-      // ComfyUI has no "-1 = random" — realize the seed here and report it back
+      // FIDELITY: the renderer sends its whole control state (defaults
+      // included) — keep only values that differ from the manifest defaults,
+      // so untouched widgets pass through the workflow file byte-identical
+      const vals = core.pruneUnchangedValues({ ...values }, manifest.controls);
+      // ComfyUI has no "-1 = random" — realize EVERY seed-type control here
+      // (a workflow can carry several decorrelated noise streams) and report
+      // them back so Regenerate can replay the exact result
       let seed = null;
-      if (manifest.controls && manifest.controls.seed) {
-        seed = Number(vals.seed);
-        if (!Number.isFinite(seed) || seed < 0) seed = crypto.randomInt(0, 0xffffffff);
-        vals.seed = seed;
+      const seeds = {};
+      for (const [k, ctl] of Object.entries(manifest.controls || {})) {
+        if (ctl.type !== 'seed') continue;
+        let v = Number(vals[k]);
+        if (!Number.isFinite(v) || v < 0) v = crypto.randomInt(0, 0xffffffff);
+        vals[k] = seeds[k] = v;
       }
+      if (seeds.seed != null) seed = seeds.seed;
       const patched = core.patchWorkflow(graph, manifest, vals);
       const clientId = crypto.randomUUID();
       pushLog('[app] POST /prompt workflow=' + workflow + ' ' + JSON.stringify(vals));
@@ -337,13 +355,17 @@ function registerComfyIpc(app, getWin) {
       // retry wrapper: if ComfyUI restarts mid-job the socket reconnects with
       // backoff, so progress/preview recover without an app restart
       // (completion is independently covered by the /history poll below)
-      let lastPreview = 0;
+      sendPreview = core.latestFrameThrottle((p) => {
+        previewStats.forwarded++;
+        send('comfy:preview', { b64: Buffer.from(p.bytes).toString('base64'), mime: p.mime });
+      });
       ws = core.openWsWithRetry(baseUrl() + `/ws?clientId=${clientId}`, {
         onMessage: (msg) => {
           if (!msg || !msg.data) return;
           if (msg.type === 'executing' && msg.data.node) {
             send('comfy:progress', { phase: nodeTitle(msg.data.node), value: 0, max: 0, elapsed: (Date.now() - t0) / 1000 });
           } else if (msg.type === 'progress') {
+            previewStats.sampled = true;
             send('comfy:progress', {
               phase: msg.data.node ? nodeTitle(msg.data.node) : 'sampling',
               value: msg.data.value || 0, max: msg.data.max || 0, elapsed: (Date.now() - t0) / 1000
@@ -351,14 +373,14 @@ function registerComfyIpc(app, getWin) {
           }
         },
         // binary preview frames (needs a --preview-method that produces them —
-        // absent frames simply mean no comfy:preview events)
+        // absent frames simply mean no comfy:preview events); only the newest
+        // frame per throttle window reaches the renderer
         onBinary: (buf) => {
           const p = core.parseBinaryPreview(buf);
           if (!p) return;
-          const now = Date.now();
-          if (now - lastPreview < 250) return;   // sampler frame rate would flood IPC
-          lastPreview = now;
-          send('comfy:preview', { b64: Buffer.from(p.bytes).toString('base64'), mime: p.mime });
+          previewStats.received++;
+          previewStats.bytes += p.bytes.length;
+          sendPreview(p);
         },
         onReconnect: (delay, attempt) =>
           pushLog(`[app] progress socket dropped — reconnect ${attempt} in ${Math.round(delay / 1000)}s`)
@@ -419,15 +441,57 @@ function registerComfyIpc(app, getWin) {
       fs.writeFileSync(full, bytes);
       const elapsed = (Date.now() - t0) / 1000;
       pushLog(`[app] ${media} saved: ${full} (${Math.round(bytes.length / 1024)} KB, ${elapsed.toFixed(1)}s)`);
-      return { ok: true, files: [{ path: full, name }], seed, elapsed, media };
+      return { ok: true, files: [{ path: full, name }], seed, seeds, elapsed, media };
     } catch (err) {
       if (err && (err.name === 'TimeoutError' || err.name === 'AbortError')) return offline(err);
       return { ok: false, error: String(err && err.message || err).slice(0, 500) };
     } finally {
       if (poll) clearInterval(poll);
+      if (sendPreview) sendPreview.close();
       if (ws) ws.close();
       jobActive = false;
+      if (previewStats.received) {
+        pushLog(`[app] preview frames: ${previewStats.received} received (${Math.round(previewStats.bytes / 1024)} KB), ${previewStats.forwarded} forwarded to panel`);
+      } else if (previewStats.sampled && !previewHintShown) {
+        previewHintShown = true;   // once per app session — it's a config nudge, not an error
+        pushLog('[app] no live-preview frames arrived from ComfyUI — if it was started outside this app, launch it with --preview-method auto (the app\'s own Start button and the updated run_nvidia_gpu.bat both do)');
+      }
       send('comfy:progress', { done: true });
+    }
+  });
+
+  // ---------- fidelity dry run ----------
+  // Diagnostic: the EXACT final API graph comfy:generate would POST for this
+  // workflow + values, plus a diff against a pure conversion of the raw .json
+  // with no app patching, and any wired inputs the converter had to drop.
+  // Shares the generate path's own pruning/conversion code so it can never
+  // drift from the real POST. Seed is left as sent (not realized) so the diff
+  // only shows deliberate patches.
+  ipcMain.handle('comfy:dryRun', async (_e, { workflow, values }) => {
+    try {
+      const { graph, manifest } = core.loadWorkflow(workflowsDir, String(workflow || ''));
+      let info = null;
+      if (core.isUiGraph(graph)) {
+        info = await core.fetchTypeInfo(core.uiGraphTypes(graph),
+          (route) => cfetch(route, { timeoutMs: 15000 }), objectInfoCache);
+      }
+      const vals = core.pruneUnchangedValues(values || {}, manifest.controls);
+      const r = core.dryRunGraph(graph, manifest, vals, info);
+      const unexplained = r.diff.filter(d => !d.control);
+      pushLog(`[app] dry run ${workflow}: ${Object.keys(r.patched).length} nodes, ` +
+        `${r.diff.length} patched input(s) (${unexplained.length} unexplained), ` +
+        `${r.droppedWires.length} dropped wire(s)`);
+      for (const d of r.diff) {
+        pushLog(`[app]   ${d.control ? 'control "' + d.control + '"' : 'UNEXPLAINED'} ` +
+          `${d.node}.${d.input} (${d.class_type || '?'}): ${JSON.stringify(d.from)} -> ${JSON.stringify(d.to)}`);
+      }
+      for (const w of r.droppedWires) {
+        pushLog(`[app]   dropped wire: ${w.node}.${w.input} (${w.class_type}, ${w.type})`);
+      }
+      return { ok: true, values: vals, diff: r.diff, droppedWires: r.droppedWires, graph: r.patched };
+    } catch (err) {
+      if (err && (err.name === 'TimeoutError' || err.name === 'AbortError')) return offline(err);
+      return { ok: false, error: String(err && err.message || err).slice(0, 500) };
     }
   });
 

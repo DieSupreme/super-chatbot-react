@@ -117,6 +117,9 @@ contextBridge.exposeInMainWorld('api', {
     presetRename: (p) => ipcRenderer.invoke('comfy:presetRename', p),
     presetDelete: (p) => ipcRenderer.invoke('comfy:presetDelete', p),
     generate: (p) => ipcRenderer.invoke('comfy:generate', p),
+    // fidelity diagnostic: exact graph generate would POST + diff vs the raw
+    // .json's pure conversion (report lands in the ComfyUI log panel too)
+    dryRun: (p) => ipcRenderer.invoke('comfy:dryRun', p),
     interrupt: () => ipcRenderer.invoke('comfy:interrupt'),
     cancel: () => ipcRenderer.invoke('comfy:cancel'),
     free: () => ipcRenderer.invoke('comfy:free'),
