@@ -318,7 +318,7 @@ function registerComfyIpc(app, getWin) {
     // per-job preview evidence: frames received off the socket vs forwarded
     // to the renderer (throttled), plus whether sampling progress ever ran —
     // that combination decides the one-time "server sends no previews" hint
-    const previewStats = { received: 0, forwarded: 0, bytes: 0, sampled: false };
+    const previewStats = { received: 0, forwarded: 0, bytes: 0, sampled: false, seen: 0, dims: '' };
     try {
       let { graph, manifest } = core.loadWorkflow(workflowsDir, workflow);
       // UI-format export (ComfyUI's default Ctrl+S)? Convert to API format
@@ -374,9 +374,26 @@ function registerComfyIpc(app, getWin) {
         },
         // binary preview frames (needs a --preview-method that produces them —
         // absent frames simply mean no comfy:preview events); only the newest
-        // frame per throttle window reaches the renderer
+        // frame per throttle window reaches the renderer. The first 3 event-1
+        // frames per job are logged with their wire bytes and decoded
+        // dimensions — a previewer with an unknown envelope then shows up in
+        // the log as "dropped", never as a broken <img>.
         onBinary: (buf) => {
           const p = core.parseBinaryPreview(buf);
+          const isPreviewEvent = buf.length > 8 && buf.readUInt32BE(0) === 1;
+          if (isPreviewEvent && previewStats.seen < 3) {
+            previewStats.seen++;
+            const fmt = buf.readUInt32BE(4);
+            if (p) {
+              const d = core.previewDims(p.bytes);
+              previewStats.dims = d ? `${d.width}x${d.height}` : previewStats.dims;
+              pushLog(`[app] preview frame #${previewStats.seen}: ${buf.length}B type=1 fmt=${fmt} -> ${p.mime} ${p.bytes.length}B`
+                + (d ? ` ${d.width}x${d.height}` : '') + (p.envelope ? ' (LTX envelope stripped)' : ''));
+            } else {
+              pushLog(`[app] preview frame #${previewStats.seen}: ${buf.length}B type=1 fmt=${fmt} -> DROPPED, no image signature; head=`
+                + buf.subarray(0, 40).toString('hex').replace(/(..)/g, '$1 ').trim());
+            }
+          }
           if (!p) return;
           previewStats.received++;
           previewStats.bytes += p.bytes.length;
@@ -451,7 +468,7 @@ function registerComfyIpc(app, getWin) {
       if (ws) ws.close();
       jobActive = false;
       if (previewStats.received) {
-        pushLog(`[app] preview frames: ${previewStats.received} received (${Math.round(previewStats.bytes / 1024)} KB), ${previewStats.forwarded} forwarded to panel`);
+        pushLog(`[app] preview frames: ${previewStats.received} received (${Math.round(previewStats.bytes / 1024)} KB${previewStats.dims ? ', ' + previewStats.dims : ''}), ${previewStats.forwarded} forwarded to panel`);
       } else if (previewStats.sampled && !previewHintShown) {
         previewHintShown = true;   // once per app session — it's a config nudge, not an error
         pushLog('[app] no live-preview frames arrived from ComfyUI — if it was started outside this app, launch it with --preview-method auto (the app\'s own Start button and the updated run_nvidia_gpu.bat both do)');

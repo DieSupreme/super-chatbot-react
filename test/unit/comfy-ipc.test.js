@@ -63,8 +63,11 @@ const wsText = (obj) => {
   return Buffer.concat([Buffer.from([0x81, t.length]), t]);
 };
 const wsBinary = (payload) => Buffer.concat([Buffer.from([0x82, payload.length]), payload]);
+// realistic frames: the parser now drops event-1 payloads with no image
+// signature, so the mock frames must open with the JPEG SOI marker
 const previewFrame = (tag) =>
-  Buffer.concat([Buffer.from([0, 0, 0, 1, 0, 0, 0, 1]), Buffer.from('JPEG-' + tag)]);
+  Buffer.concat([Buffer.from([0, 0, 0, 1, 0, 0, 0, 1]),
+    Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from('-' + tag)]);
 
 let server, base;
 let sendPreviews = true;             // per-test: does the "server" produce frames?
@@ -128,10 +131,15 @@ test('generate: binary preview frames become comfy:preview events, newest-frame 
   assert.ok(seen.length >= 1 && seen.length <= 3, `throttle forwards 1-3 of 5 frames, got ${seen.length}`);
   for (const p of seen) assert.equal(p.mime, 'image/jpeg');
   // the LAST forwarded frame is the NEWEST of the burst, never an early stale one
-  assert.equal(Buffer.from(seen[seen.length - 1].b64, 'base64').toString(), 'JPEG-5');
+  assert.equal(Buffer.from(seen[seen.length - 1].b64, 'base64').subarray(4).toString(), '-5');
   const evidence = logLines().find((l) => /preview frames: 5 received/.test(l));
   assert.ok(evidence, 'evidence line logged: ' + JSON.stringify(logLines()));
   assert.match(evidence, /\d+ forwarded/);
+  // per-job first-frame diagnostics: wire truth (type/format/bytes) + mime
+  const diag = logLines().find((l) => /preview frame #1:/.test(l));
+  assert.ok(diag, 'first-frame diagnostic logged: ' + JSON.stringify(logLines()));
+  assert.match(diag, /type=1 fmt=1/);
+  assert.match(diag, /image\/jpeg/);
   // no hint when frames DID arrive
   assert.ok(!logLines().some((l) => /no live-preview frames/.test(l)));
 });

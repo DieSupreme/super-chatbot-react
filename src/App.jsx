@@ -186,7 +186,8 @@ export default function App() {
     if (!st.currentId) setCurrentId(id);
     stateRef.current.currentId = id;
     const persistable = msgs
-      .filter(m => !m.error && !m.streaming && !m.imagePending && (m.role === 'user' || (m.content && m.content.length)))
+      .filter(m => !m.error && !m.streaming && !m.imagePending && m.kind !== 'gen'
+        && (m.role === 'user' || (m.content && m.content.length)))
       .map(toPersistedMessage);
     await api.convoSave({
       id, title: st.currentTitle, model: st.model,
@@ -570,11 +571,39 @@ export default function App() {
     }
   }
 
+  // ================= live generation card =================
+  // A ComfyUI generation streams INTO the chat: beginGenCard drops a
+  // transient kind:'gen' message (the live preview + progress render inside
+  // it, updating in place — frames never append messages), the finished
+  // result REPLACES it at the same position, and a failure turns it into an
+  // error bubble. Never persisted (persistConvo filters kind 'gen').
+  function beginGenCard({ media, prompt, workflow }) {
+    const uid = newUid();
+    setMessages([...messagesRef.current, {
+      uid, role: 'assistant', who: 'ComfyUI', kind: 'gen',
+      content: `[generating ${media || 'video'}: ${prompt || workflow}]`
+    }]);
+    return uid;
+  }
+  function failGenCard(uid, error) {
+    if (!uid || !messagesRef.current.some(m => m.uid === uid)) return;
+    setMessages(messagesRef.current.map(m => m.uid === uid
+      ? { ...m, error: 'Generation failed: ' + String(error || 'unknown').slice(0, 300) }
+      : m));
+  }
+  // swap the gen card for the finished result at the same position; without
+  // a live card (or for a job's extra files) the message appends as before
+  function deliverMessage(msg, genUid) {
+    const cur = messagesRef.current;
+    const idx = genUid ? cur.findIndex(m => m.uid === genUid) : -1;
+    setMessages(idx >= 0 ? cur.map((m, i) => (i === idx ? msg : m)) : [...cur, msg]);
+  }
+
   // ================= local SD results =================
   // The panel hands back {path, prompt, seed, genParams}; the image lives on
   // disk and the message carries the path plus the FULL generation params
   // (kind:'image' discriminates it from chat for Regenerate routing).
-  async function appendSdImage({ path, prompt, seed, genParams }) {
+  async function appendSdImage({ path, prompt, seed, genParams, genUid }) {
     if (!messagesRef.current.length) {
       const t = '🎨 ' + prompt.slice(0, 38);
       setCurrentTitle(t);
@@ -583,26 +612,26 @@ export default function App() {
     // kind is the MEDIA; genParams.backend records who made it (forge |
     // comfy) so Regenerate replays against the right backend
     const viaComfy = genParams && genParams.backend === 'comfy';
-    setMessages([...messagesRef.current, {
+    deliverMessage({
       uid: newUid(), role: 'assistant', who: viaComfy ? 'ComfyUI' : 'Stable Diffusion',
       content: `[${viaComfy ? 'image' : 'SD image'}: ${prompt}]` + (seed != null ? ` (seed ${seed})` : ''),
       imagePath: path, kind: 'image', genParams
-    }]);
+    }, genUid);
     await persistConvo(messagesRef.current);
   }
 
   // video results: same shape as image results, kind 'video' + videoPath
-  async function appendVideo({ path, prompt, seed, genParams }) {
+  async function appendVideo({ path, prompt, seed, genParams, genUid }) {
     if (!messagesRef.current.length) {
       const t = '🎬 ' + (prompt || 'video').slice(0, 38);
       setCurrentTitle(t);
       stateRef.current.currentTitle = t;
     }
-    setMessages([...messagesRef.current, {
+    deliverMessage({
       uid: newUid(), role: 'assistant', who: 'ComfyUI',
       content: `[video: ${prompt || genParams.workflow}]` + (seed != null ? ` (seed ${seed})` : ''),
       videoPath: path, kind: 'video', genParams
-    }]);
+    }, genUid);
     await persistConvo(messagesRef.current);
   }
 
@@ -737,6 +766,7 @@ export default function App() {
           onToast={toast} />
 
         {sdMounted && <SdPanel open={sdOpen} onToast={toast} onImage={appendSdImage} onVideo={appendVideo}
+          onGenStart={beginGenCard} onGenFail={failGenCard}
           convoImages={convoImages} controlRef={sdControlRef} />}
 
         <SidePanel open={sideOpen} paths={allowPaths} onAdd={addAllow} onRemove={removeAllow} />

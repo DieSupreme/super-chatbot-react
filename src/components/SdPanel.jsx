@@ -103,7 +103,7 @@ function NumRow({ label, value, meta, onChange, allowNull, title }) {
   );
 }
 
-export default function SdPanel({ open, onToast, onImage, onVideo, convoImages, controlRef }) {
+export default function SdPanel({ open, onToast, onImage, onVideo, onGenStart, onGenFail, convoImages, controlRef }) {
   // media and backend are SEPARATE axes. The toggle picks the media
   // ('image' | 'video'); the model/workflow picked below decides the backend
   // (Forge or ComfyUI) — the user never chooses a backend directly. In image
@@ -650,9 +650,11 @@ export default function SdPanel({ open, onToast, onImage, onVideo, convoImages, 
 
       {media === 'video' ? (
         <ComfyBody media="video" onToast={onToast} onImage={onImage} onVideo={onVideo}
+          onGenStart={onGenStart} onGenFail={onGenFail}
           controlRef={controlRef} onBusyChange={setComfyBusy} />
       ) : imageWf ? (
         <ComfyBody media="image" workflow={imageWf} onToast={onToast} onImage={onImage} onVideo={onVideo}
+          onGenStart={onGenStart} onGenFail={onGenFail}
           controlRef={controlRef} onBusyChange={setComfyBusy} />
       ) : (<>
       <div className="sd-head">

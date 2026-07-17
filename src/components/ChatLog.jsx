@@ -106,6 +106,45 @@ function VideoMsg({ path, onToast }) {
   );
 }
 
+// ---------- live generation card ----------
+// A ComfyUI job in flight is a MESSAGE (kind 'gen'): the chat shows the live
+// preview image, progress bar and sampler-pass label while the job runs, and
+// App replaces this message in place with the final image/video result when
+// it lands. One <img> updated in place — frames NEVER append new messages —
+// and the card itself subscribes to the preview/progress channels so frame
+// churn stays out of the message array. Never persisted (transient by kind).
+function GenCard({ m, onToast }) {
+  const [progress, setProgress] = useState(null);
+  const [preview, setPreview] = useState(null);    // latest frame { b64, mime }
+  useEffect(() => {
+    const offP = api.comfy.onProgress((d) => { if (!d.done) setProgress(d); });
+    const offPrev = api.comfy.onPreview ? api.comfy.onPreview((d) => setPreview(d)) : () => {};
+    return () => { offP(); offPrev(); };
+  }, []);
+  const pct = progress && progress.max ? Math.min(100, Math.round((progress.value / progress.max) * 100)) : null;
+  const cancel = async () => {
+    if (!window.confirm('Interrupt the running job (and clear any queued jobs)?')) return;
+    const r = await api.comfy.cancel();
+    if (!r || !r.ok) onToast((r && r.error) || 'Cancel failed', 'warn');
+  };
+  return (
+    <div className="gen-live">
+      {preview && (
+        <img className="gen-img gen-live-img" alt="live preview"
+          src={`data:${preview.mime};base64,${preview.b64}`} />
+      )}
+      <div className="vid-progress-meta">
+        <span>{(progress && progress.phase) || 'queued…'}</span>
+        <span>{pct != null ? pct + '%' : ''}{progress ? ' · ' + Math.round(progress.elapsed || 0) + 's' : ''}</span>
+      </div>
+      <div className="sd-progress"><div className="sd-progress-fill" style={{ width: (pct != null ? pct : 4) + '%' }} /></div>
+      <div className="gen-actions">
+        <button className="ghost" title="Interrupt the running job and clear the queue" onClick={cancel}>✕ Cancel</button>
+      </div>
+    </div>
+  );
+}
+
 // ---------- local SD image (on disk; loaded via IPC on mount) ----------
 // Only the file path lives in message state — pixels are fetched when the
 // bubble mounts and stay in this component's local state.
@@ -166,6 +205,8 @@ function MessageBubble({ m, isLatestAi, isStreamingAny, onRetry, onRegenerate, o
   let body;
   if (m.error) {
     body = <span className="err">{m.error}</span>;
+  } else if (m.kind === 'gen') {
+    body = <GenCard m={m} onToast={onToast} />;
   } else if (isVideo && m.videoPath) {
     body = <VideoMsg path={m.videoPath} onToast={onToast} />;
   } else if (m.imagePending) {
@@ -196,7 +237,7 @@ function MessageBubble({ m, isLatestAi, isStreamingAny, onRetry, onRegenerate, o
     );
   }
 
-  const showTools = !m.streaming && !m.imagePending;
+  const showTools = !m.streaming && !m.imagePending && m.kind !== 'gen';
 
   return (
     <div className={'msg ' + (isUser ? 'user' : 'ai')}>

@@ -336,7 +336,7 @@ function ControlPicker({ wf, onToast, onChanged, onClose }) {
   );
 }
 
-export default function ComfyBody({ media = 'video', workflow: pinnedWf, onToast, onImage, onVideo, controlRef, onBusyChange }) {
+export default function ComfyBody({ media = 'video', workflow: pinnedWf, onToast, onImage, onVideo, onGenStart, onGenFail, controlRef, onBusyChange }) {
   const [status, setStatus] = useState('stopped');
   const [statusMsg, setStatusMsg] = useState('');
   const [url, setUrl] = useState('');
@@ -499,18 +499,22 @@ export default function ComfyBody({ media = 'video', workflow: pinnedWf, onToast
 
   const runGeneration = async (workflow, vals, promptText) => {
     setBusy(true); setLastError(''); setProgress(null);
+    // the job also lives in the CHAT as a live card (preview + progress +
+    // cancel); the finished result replaces it, an error marks it
+    const wfMedia = (workflows.find(w => w.name === workflow) || {}).media || 'video';
+    const genUid = onGenStart ? onGenStart({ media: wfMedia, prompt: promptText, workflow }) : null;
     try {
       const r = await api.comfy.generate({ workflow, values: vals });
       if (!r.ok) {
         if (r.offline) { setStatus('stopped'); setStatusMsg(r.error); }
         else setLastError(r.error || 'generation failed');
+        onGenFail && onGenFail(genUid, r.error || 'generation failed');
         return;
       }
       setLastSeed(r.seed);
       // the result's media decides the message kind; the backend rides along
       // in genParams so Regenerate replays against ComfyUI, never Forge
-      const outMedia = r.media
-        || ((workflows.find(w => w.name === workflow) || {}).media || 'video');
+      const outMedia = r.media || wfMedia;
       const deliver = outMedia === 'image' ? onImage : onVideo;
       const genParams = {
         workflow, backend: 'comfy', mode: outMedia,
@@ -518,11 +522,16 @@ export default function ComfyBody({ media = 'video', workflow: pinnedWf, onToast
         // several); the single r.seed stays as the legacy fallback
         values: { ...vals, ...(r.seeds || (r.seed != null ? { seed: r.seed } : {})) }
       };
-      for (const f of r.files) deliver({
-        path: f.path, name: f.name, prompt: promptText, seed: r.seed, elapsed: r.elapsed, genParams
-      });
+      r.files.forEach((f, i) => deliver({
+        path: f.path, name: f.name, prompt: promptText, seed: r.seed, elapsed: r.elapsed, genParams,
+        // the first file replaces the live card in place; extras append
+        genUid: i === 0 ? genUid : null
+      }));
+      if (!r.files.length) onGenFail && onGenFail(genUid, 'workflow finished but produced no files');
     } catch (err) {
-      setLastError(String(err && err.message || err).slice(0, 300));
+      const msg = String(err && err.message || err).slice(0, 300);
+      setLastError(msg);
+      onGenFail && onGenFail(genUid, msg);
     } finally {
       setBusy(false); setProgress(null); setPreview(null);
     }

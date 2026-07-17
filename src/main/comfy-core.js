@@ -1237,15 +1237,55 @@ function openNativeWs(url, { onMessage, onBinary, onClose } = {}) {
 }
 
 // ---------- binary preview frames ----------
-// ComfyUI /ws binary message: [4B event type BE][payload]; event 1 = preview
-// image, whose payload is [4B format BE (1=jpeg, 2=png)][image bytes].
+// Stock ComfyUI /ws binary message: [4B event type BE][payload]; event 1 =
+// preview image, whose payload is [4B format BE (1=jpeg, 2=png)][image bytes].
+// The kjnodes / VideoHelperSuite LTX video previewer sends the SAME event 1
+// but wraps the image in an extra envelope after the format field:
+// [4B always-1][4B frame index][16B Pascal-string node id] — serving those 24
+// bytes to an <img> as part of the JPEG is a guaranteed broken icon. The
+// image signature is therefore the ground truth for BOTH the strip offset and
+// the mime; event-1 payloads with no signature at either offset are dropped
+// (comfy.js logs the wire bytes of the first frames per job, so a new
+// envelope shape shows up in the log instead of as a broken image).
+function sniffImageMime(b) {
+  if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'image/jpeg';
+  if (b.length >= 8 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return 'image/png';
+  return null;
+}
+const LTX_ENVELOPE = 24;   // 4B always-1 + 4B frame index + 16B '16p' node id
 function parseBinaryPreview(buf) {
   if (!buf || buf.length <= 8) return null;
   if (buf.readUInt32BE(0) !== 1) return null;
-  return {
-    mime: buf.readUInt32BE(4) === 2 ? 'image/png' : 'image/jpeg',
-    bytes: buf.subarray(8)
-  };
+  const bytes = buf.subarray(8);
+  let mime = sniffImageMime(bytes);
+  if (mime) return { mime, bytes };
+  if (bytes.length > LTX_ENVELOPE) {
+    mime = sniffImageMime(bytes.subarray(LTX_ENVELOPE));
+    if (mime) return { mime, bytes: bytes.subarray(LTX_ENVELOPE), envelope: true };
+  }
+  return null;
+}
+
+// Container dimensions (PNG IHDR / JPEG SOF scan) — decode evidence for the
+// per-job log without a rasterizer in the main process.
+function previewDims(bytes) {
+  const b = bytes;
+  if (!b || b.length < 4) return null;
+  if (b[0] === 0x89 && b[1] === 0x50 && b.length >= 24) {
+    return { width: b.readUInt32BE(16), height: b.readUInt32BE(20) };
+  }
+  if (b[0] === 0xff && b[1] === 0xd8) {
+    let i = 2;
+    while (i + 9 < b.length) {
+      if (b[i] !== 0xff) { i++; continue; }
+      const m = b[i + 1];
+      if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) {
+        return { width: b.readUInt16BE(i + 7), height: b.readUInt16BE(i + 5) };
+      }
+      i += 2 + b.readUInt16BE(i + 2);
+    }
+  }
+  return null;
 }
 
 // ---------- preview frame throttle ----------
@@ -1436,6 +1476,6 @@ module.exports = {
   readControlValues, saveControlValues, clearControlValues, pruneControlValues,
   mediaFileName, videoFileName, objectInfoOptions, objectInfoRoute, fetchTypeInfo,
   openWs, openNativeWs, openManualWs, openWsWithRetry,
-  parseBinaryPreview, latestFrameThrottle, cancelAll, uploadImage,
+  parseBinaryPreview, previewDims, latestFrameThrottle, cancelAll, uploadImage,
   pruneUnchangedValues, diffApiGraphs, listDroppedWires, dryRunGraph
 };

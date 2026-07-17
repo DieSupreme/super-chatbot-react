@@ -26,21 +26,66 @@ test('comfyArgs: spawn line enables previews and keeps the standalone flags', ()
 });
 
 // ---------- binary preview frame parsing ----------
-// ComfyUI binary WS frame: [4B event BE][payload]; event 1 = preview image,
-// payload = [4B format BE (1=jpeg, 2=png)][image bytes]
-test('parseBinaryPreview: jpeg and png frames decode; other events and runts return null', () => {
-  const jpeg = Buffer.concat([Buffer.from([0, 0, 0, 1, 0, 0, 0, 1]), Buffer.from('JPEGDATA')]);
+// Stock ComfyUI binary WS frame: [4B event BE][payload]; event 1 = preview
+// image, payload = [4B format BE (1=jpeg, 2=png)][image bytes]. The kjnodes /
+// VHS LTX video previewer sends the SAME event 1 but inserts an envelope
+// after the format field: [4B always-1][4B frame index][16B Pascal node id]
+// — the image signature is the ground truth for strip offset AND mime.
+const JPEG_HEAD = Buffer.from([0xff, 0xd8, 0xff, 0xe0]);
+const PNG_HEAD = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+test('parseBinaryPreview: stock jpeg/png frames decode; other events, runts and non-images return null', () => {
+  const jpeg = Buffer.concat([Buffer.from([0, 0, 0, 1, 0, 0, 0, 1]), JPEG_HEAD, Buffer.from('rest')]);
   const p1 = core.parseBinaryPreview(jpeg);
   assert.equal(p1.mime, 'image/jpeg');
-  assert.equal(p1.bytes.toString(), 'JPEGDATA');
+  assert.equal(p1.bytes.length, JPEG_HEAD.length + 4);
+  assert.deepEqual(p1.bytes.subarray(0, 4), JPEG_HEAD);
 
-  const png = Buffer.concat([Buffer.from([0, 0, 0, 1, 0, 0, 0, 2]), Buffer.from('PNGDATA')]);
+  const png = Buffer.concat([Buffer.from([0, 0, 0, 1, 0, 0, 0, 2]), PNG_HEAD]);
   assert.equal(core.parseBinaryPreview(png).mime, 'image/png');
 
-  const other = Buffer.concat([Buffer.from([0, 0, 0, 2, 0, 0, 0, 1]), Buffer.from('X')]);
+  const other = Buffer.concat([Buffer.from([0, 0, 0, 2, 0, 0, 0, 1]), JPEG_HEAD]);
   assert.equal(core.parseBinaryPreview(other), null);      // not a preview event
   assert.equal(core.parseBinaryPreview(Buffer.from([0, 0, 0, 1])), null);   // runt
   assert.equal(core.parseBinaryPreview(null), null);
+  // event 1 whose payload carries no image signature anywhere we know to
+  // look — forwarding it would render a broken <img>, so it must be dropped
+  const junk = Buffer.concat([Buffer.from([0, 0, 0, 1, 0, 0, 0, 1]), Buffer.from('JPEGDATA')]);
+  assert.equal(core.parseBinaryPreview(junk), null);
+});
+
+test('parseBinaryPreview: kjnodes LTX video envelope (frame index + 16B Pascal node id) is stripped', () => {
+  const env = Buffer.concat([
+    Buffer.from([0, 0, 0, 1, 0, 0, 0, 1]),                                    // event, "format"
+    Buffer.from([0, 0, 0, 1]),                                                // always-1
+    Buffer.from([0, 0, 0, 22]),                                               // frame index
+    Buffer.concat([Buffer.from([3]), Buffer.from('113'), Buffer.alloc(12)]),  // '16p' node id
+    JPEG_HEAD, Buffer.from('rest')
+  ]);
+  const p = core.parseBinaryPreview(env);
+  assert.ok(p, 'envelope frame decodes');
+  assert.equal(p.mime, 'image/jpeg');
+  assert.equal(p.envelope, true);
+  assert.deepEqual(p.bytes.subarray(0, 4), JPEG_HEAD);
+});
+
+test('parseBinaryPreview + previewDims: REAL captured LTX wire frame -> 256x352 jpeg', () => {
+  const raw = fs.readFileSync(path.join(__dirname, '..', 'fixtures', 'ltx-preview-frame.bin'));
+  const p = core.parseBinaryPreview(raw);
+  assert.ok(p, 'real captured frame parsed');
+  assert.equal(p.mime, 'image/jpeg');
+  assert.equal(p.envelope, true);
+  assert.equal(p.bytes[0], 0xff);
+  assert.equal(p.bytes[1], 0xd8);
+  assert.deepEqual(core.previewDims(p.bytes), { width: 256, height: 352 });
+});
+
+test('previewDims: png IHDR parses; junk returns null', () => {
+  const png = Buffer.concat([PNG_HEAD, Buffer.from([0, 0, 0, 13]), Buffer.from('IHDR'),
+    Buffer.from([0, 0, 1, 0, 0, 0, 0, 64]), Buffer.alloc(5)]);
+  assert.deepEqual(core.previewDims(png), { width: 256, height: 64 });
+  assert.equal(core.previewDims(Buffer.from('nope')), null);
+  assert.equal(core.previewDims(null), null);
 });
 
 // ---------- preview frame throttle ----------
@@ -102,7 +147,7 @@ test('openManualWs: binary frames reach onBinary; text keeps flowing to onMessag
       `Sec-WebSocket-Accept: ${wsAccept(req.headers['sec-websocket-key'])}\r\n\r\n`);
     const text = JSON.stringify({ type: 'hello' });
     socket.write(Buffer.concat([Buffer.from([0x81, text.length]), Buffer.from(text)]));
-    const bin = Buffer.concat([Buffer.from([0, 0, 0, 1, 0, 0, 0, 1]), Buffer.from('FRAME')]);
+    const bin = Buffer.concat([Buffer.from([0, 0, 0, 1, 0, 0, 0, 1]), JPEG_HEAD, Buffer.from('FRAME')]);
     socket.write(Buffer.concat([Buffer.from([0x82, bin.length]), bin]));
     socket.on('error', () => {});
   });
@@ -119,7 +164,7 @@ test('openManualWs: binary frames reach onBinary; text keeps flowing to onMessag
   assert.deepEqual(msgs, ['hello']);
   assert.equal(bins.length, 1);
   const p = core.parseBinaryPreview(bins[0]);
-  assert.equal(p.bytes.toString(), 'FRAME');
+  assert.equal(p.bytes.subarray(JPEG_HEAD.length).toString(), 'FRAME');
 });
 
 // ---------- reconnect with backoff ----------
