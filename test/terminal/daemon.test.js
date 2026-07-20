@@ -77,55 +77,61 @@ test('daemon: reattach to a dead session reports alive=false', async () => {
   } finally { child.kill(); }
 });
 
-test('daemon: killUnpinned keeps pinned, then quitAll exits the process', async () => {
+test('daemon: killUnpinned keeps pinned, then quitAll exits the process', { timeout: 15000 }, async () => {
   const { child, pipe, udir } = bootDaemon();
-  const exited = new Promise(res => child.on('exit', () => res(true)));
-  const sock = await connect(pipe);
-  const lock = JSON.parse(fs.readFileSync(path.join(udir, 'terminal-daemon.json'), 'utf8'));
-  const c = client(sock);
-  c.hello(lock.token);
-  const keep = await c.req({ t: 'create', opts: { label: 'keep' } });
-  await c.req({ t: 'create', opts: { label: 'drop' } });
-  await c.req({ t: 'setPinned', id: keep.id, pinned: true });
-  await c.req({ t: 'killUnpinned' });
-  const rows = await c.req({ t: 'list' });
-  assert.strictEqual(rows.length, 1);
-  assert.strictEqual(rows[0].id, keep.id);
-  await c.req({ t: 'quitAll' });
-  sock.end();
-  assert.strictEqual(await exited, true);
+  try {
+    const exited = new Promise(res => child.on('exit', () => res(true)));
+    const sock = await connect(pipe);
+    const lock = JSON.parse(fs.readFileSync(path.join(udir, 'terminal-daemon.json'), 'utf8'));
+    const c = client(sock);
+    c.hello(lock.token);
+    const keep = await c.req({ t: 'create', opts: { label: 'keep' } });
+    await c.req({ t: 'create', opts: { label: 'drop' } });
+    await c.req({ t: 'setPinned', id: keep.id, pinned: true });
+    await c.req({ t: 'killUnpinned' });
+    const rows = await c.req({ t: 'list' });
+    assert.strictEqual(rows.length, 1);
+    assert.strictEqual(rows[0].id, keep.id);
+    await c.req({ t: 'quitAll' });
+    sock.end();
+    assert.strictEqual(await exited, true);
+  } finally { child.kill(); }
 });
 
-test('daemon: self-exits when last session dies and client disconnects', async () => {
+test('daemon: self-exits when last session dies and client disconnects', { timeout: 15000 }, async () => {
   const { child, pipe, udir } = bootDaemon();
-  const exited = new Promise(res => child.on('exit', () => res(true)));
-  const sock = await connect(pipe);
-  const lock = JSON.parse(fs.readFileSync(path.join(udir, 'terminal-daemon.json'), 'utf8'));
-  const c = client(sock);
-  c.hello(lock.token);
-  const s = await c.req({ t: 'create', opts: {} });
-  await c.req({ t: 'kill', id: s.id });
-  sock.end();
-  assert.strictEqual(await exited, true);
+  try {
+    const exited = new Promise(res => child.on('exit', () => res(true)));
+    const sock = await connect(pipe);
+    const lock = JSON.parse(fs.readFileSync(path.join(udir, 'terminal-daemon.json'), 'utf8'));
+    const c = client(sock);
+    c.hello(lock.token);
+    const s = await c.req({ t: 'create', opts: {} });
+    await c.req({ t: 'kill', id: s.id });
+    sock.end();
+    assert.strictEqual(await exited, true);
+  } finally { child.kill(); }
 });
 
 test('daemon: self-exits when the last session dies on its own after the client disconnects', { timeout: 5000 }, async () => {
   const { child, pipe, udir } = bootDaemon({ TERM_FAKE_AUTOEXIT: '120' });
-  const exited = new Promise(res => child.on('exit', () => res(true)));
-  const sock = await connect(pipe);
-  const lock = JSON.parse(fs.readFileSync(path.join(udir, 'terminal-daemon.json'), 'utf8'));
-  const c = client(sock);
-  c.hello(lock.token);
-  // Unpinned session, still alive when we disconnect: the close-handler's
-  // self-exit check must see sm.size() >= 1 and NOT exit yet.
-  await c.req({ t: 'create', opts: {} });
-  sock.end();
-  // Give the close handler a moment to run (and confirm it did NOT exit while
-  // the session was still alive).
-  await wait(50);
-  assert.strictEqual(child.exitCode, null, 'daemon must not exit while its session is still alive');
-  // The fake PTY autonomously exits ~120ms after spawn, with zero clients
-  // connected. The daemon must notice via the deferred maybeSelfExit() in the
-  // sm.on('exit', ...) handler and shut itself down.
-  assert.strictEqual(await exited, true);
+  try {
+    const exited = new Promise(res => child.on('exit', () => res(true)));
+    const sock = await connect(pipe);
+    const lock = JSON.parse(fs.readFileSync(path.join(udir, 'terminal-daemon.json'), 'utf8'));
+    const c = client(sock);
+    c.hello(lock.token);
+    // Unpinned session, still alive when we disconnect: the close-handler's
+    // self-exit check must see sm.size() >= 1 and NOT exit yet.
+    await c.req({ t: 'create', opts: {} });
+    sock.end();
+    // Give the close handler a moment to run (and confirm it did NOT exit while
+    // the session was still alive).
+    await wait(50);
+    assert.strictEqual(child.exitCode, null, 'daemon must not exit while its session is still alive');
+    // The fake PTY autonomously exits ~120ms after spawn, with zero clients
+    // connected. The daemon must notice via the deferred maybeSelfExit() in the
+    // sm.on('exit', ...) handler and shut itself down.
+    assert.strictEqual(await exited, true);
+  } finally { child.kill(); }
 });

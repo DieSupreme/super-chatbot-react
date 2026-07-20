@@ -598,15 +598,28 @@ function makeWsServer() {
   return { server, state, destroy };
 }
 
+// Await a condition instead of sleeping a fixed interval — fixed sleeps flake
+// on loaded CI runners when frames arrive after the window.
+const until = async (cond, ms = 5000, step = 10) => {
+  const t0 = Date.now();
+  while (!cond()) {
+    if (Date.now() - t0 > ms) throw new Error('condition not met within ' + ms + 'ms');
+    await new Promise(r => setTimeout(r, step));
+  }
+};
+
 test('openManualWs: RFC6455 handshake, text frames, fragmentation, ping->pong', async () => {
   const got = [];
   const { server, state, destroy } = makeWsServer();
   await new Promise(r => server.listen(0, '127.0.0.1', r));
   const ws = core.openManualWs(`http://127.0.0.1:${server.address().port}/ws?clientId=t`,
     { onMessage: (m) => got.push(m.type) });
-  await new Promise(r => setTimeout(r, 300));
-  ws.close();
-  destroy();
+  try {
+    await until(() => got.length >= 2 && state.pongSeen);
+  } finally {
+    ws.close();
+    destroy();
+  }
   assert.deepEqual(got, ['hello', 'frag']);
   assert.equal(state.pongSeen, true);
 });
@@ -618,8 +631,11 @@ test('openWs: prefers the native WebSocket when the runtime has one', async (t) 
   await new Promise(r => server.listen(0, '127.0.0.1', r));
   const ws = core.openWs(`http://127.0.0.1:${server.address().port}/ws?clientId=t`,
     { onMessage: (m) => got.push(m.type) });
-  await new Promise(r => setTimeout(r, 400));
-  ws.close();
-  destroy();
+  try {
+    await until(() => got.length >= 2);
+  } finally {
+    ws.close();
+    destroy();
+  }
   assert.deepEqual(got, ['hello', 'frag']);
 });

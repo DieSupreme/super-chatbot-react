@@ -19,31 +19,40 @@ function cfg() {
   };
 }
 
-test('spawns a daemon, creates + reattaches a session, receives echo', async () => {
+test('spawns a daemon, creates + reattaches a session, receives echo', { timeout: 15000 }, async () => {
   const c = createDaemonClient(cfg());
-  await c.ensure();
-  const got = [];
-  c.onData(d => got.push(d));
-  const s = await c.create({ label: 'A' });
-  const re = await c.reattach(s.id);
-  assert.ok(re.ring.includes('BANNER'));
-  c.write(s.id, 'yo');
-  await wait(150);
-  assert.ok(got.some(d => d.id === s.id && d.data.includes('ECHO:yo')));
-  await c.quitAll();
+  try {
+    await c.ensure();
+    const got = [];
+    c.onData(d => got.push(d));
+    const s = await c.create({ label: 'A' });
+    const re = await c.reattach(s.id);
+    assert.ok(re.ring.includes('BANNER'));
+    c.write(s.id, 'yo');
+    await wait(150);
+    assert.ok(got.some(d => d.id === s.id && d.data.includes('ECHO:yo')));
+  } finally {
+    try { await c.quitAll(); } catch (_) {}
+    try { c.disconnect(); } catch (_) {}
+  }
 });
 
-test('a second client reuses the already-running daemon (list sees the session)', async () => {
+test('a second client reuses the already-running daemon (list sees the session)', { timeout: 15000 }, async () => {
   const shared = cfg();
   const c1 = createDaemonClient(shared);
-  await c1.ensure();
-  const keep = await c1.create({ label: 'keep' });
-  await c1.setPinned(keep.id, true);
-  c1.disconnect();                            // simulate app close (daemon stays up)
-
   const c2 = createDaemonClient(shared);      // fresh app launch
-  await c2.ensure();
-  const rows = await c2.list();
-  assert.ok(rows.some(r => r.id === keep.id && r.pinned === true));
-  await c2.quitAll();
+  try {
+    await c1.ensure();
+    const keep = await c1.create({ label: 'keep' });
+    await c1.setPinned(keep.id, true);
+    c1.disconnect();                          // simulate app close (daemon stays up)
+
+    await c2.ensure();
+    const rows = await c2.list();
+    assert.ok(rows.some(r => r.id === keep.id && r.pinned === true));
+  } finally {
+    try { await c2.quitAll(); } catch (_) {}
+    try { c1.disconnect(); } catch (_) {}
+    try { c2.disconnect(); } catch (_) {}
+  }
 });

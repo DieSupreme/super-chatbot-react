@@ -138,6 +138,16 @@ test('latestFrameThrottle: close() cancels the trailing send; null frames are ig
 const wsAccept = (key) => crypto.createHash('sha1')
   .update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
 
+// Await a condition instead of sleeping a fixed interval — fixed sleeps flake
+// on loaded CI runners when frames arrive after the window.
+const until = async (cond, ms = 5000, step = 10) => {
+  const t0 = Date.now();
+  while (!cond()) {
+    if (Date.now() - t0 > ms) throw new Error('condition not met within ' + ms + 'ms');
+    await new Promise(r => setTimeout(r, step));
+  }
+};
+
 test('openManualWs: binary frames reach onBinary; text keeps flowing to onMessage', async () => {
   const sockets = [];
   const server = http.createServer();
@@ -157,7 +167,7 @@ test('openManualWs: binary frames reach onBinary; text keeps flowing to onMessag
     onMessage: (m) => msgs.push(m.type),
     onBinary: (b) => bins.push(b)
   });
-  await new Promise(r => setTimeout(r, 300));
+  await until(() => msgs.length >= 1 && bins.length >= 1);
   ws.close();
   for (const s of sockets) { try { s.destroy(); } catch (_) {} }
   server.close();
@@ -192,7 +202,7 @@ test('openWsWithRetry: reconnects with growing backoff while active, stops after
     onReconnect: (d, attempt) => reconnects.push(attempt)
   }, { active: () => true, setTimer });
 
-  await new Promise(r => setTimeout(r, 500));
+  await until(() => conns >= 4);
   client.close();
   for (const s of sockets) { try { s.destroy(); } catch (_) {} }
   server.close();
@@ -218,10 +228,12 @@ test('openWsWithRetry: an inactive job never reconnects', async () => {
   const delays = [];
   const client = core.openWsWithRetry(`http://127.0.0.1:${server.address().port}/ws`, {},
     { active: () => false, setTimer: (fn, d) => delays.push(d) });
-  await new Promise(r => setTimeout(r, 200));
+  // negative assertion with no event to await: an inactive job's connect()
+  // short-circuits synchronously, so nothing ever connects or gets scheduled.
   client.close();
   for (const s of sockets) { try { s.destroy(); } catch (_) {} }
   server.close();
+  assert.equal(conns, 0, 'inactive job never connects');
   assert.equal(delays.length, 0, 'no reconnect scheduled for an inactive job');
 });
 
