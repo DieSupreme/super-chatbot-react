@@ -19,6 +19,9 @@ export function toPersistedMessage(m) {
   if (m.videoPath) out.videoPath = m.videoPath;
   // message discriminator: 'image' = SD generation; absent = chat (old files)
   if (m.kind && m.kind !== 'chat') out.kind = m.kind;
+  // a deliberately Stop-truncated reply carries a marker so it reloads as
+  // stopped, not as if it were the model's complete answer
+  if (m.stopped) out.stopped = true;
   if (m.genParams) {
     // full generation params for replay — minus in-memory pixel buffers
     const { initB64, maskData, ...gp } = m.genParams;

@@ -95,6 +95,19 @@ export default function App() {
   const rafId = useRef(0);
   const setStreaming = (on) => { isStreamingRef.current = on; setIsStreaming(on); };
 
+  // ---------- generation-busy (Forge/ComfyUI) ----------
+  // Mirrors the SD panel's combined Forge+Comfy busy flag. A running generation
+  // pins the current conversation the same way streaming does, so a result can
+  // never be delivered into (or its title overwrite) a different conversation
+  // the user switched to mid-job.
+  const genBusyRef = useRef(false);
+
+  // The full stored conversation object for the open convo, kept so persistConvo
+  // can round-trip unknown top-level fields another app version may have written
+  // instead of rebuilding from a fixed key set.
+  const loadedConvoRef = useRef(null);
+  const onGenBusyChange = useCallback((b) => { genBusyRef.current = b; }, []);
+
   // ---------- allow-list / toasts / drop overlay ----------
   const [allowPaths, setAllowPaths] = useState([]);
   const [toasts, setToasts] = useState([]);
@@ -201,7 +214,12 @@ export default function App() {
       .filter(m => !m.error && !m.streaming && !m.imagePending && m.kind !== 'gen'
         && (m.role === 'user' || (m.content && m.content.length)))
       .map(toPersistedMessage);
+    // Preserve any top-level fields a newer/older app version wrote into this
+    // conversation: spread the stored object first, then overwrite the keys this
+    // build owns. `messages` is always overwritten, so old messages never leak.
+    const preserved = (loadedConvoRef.current && loadedConvoRef.current.id === id) ? loadedConvoRef.current : {};
     await api.convoSave({
+      ...preserved,
       id, title: st.currentTitle, model: st.model,
       messages: persistable, cost: st.currentCost, sysPrompt: st.sysPrompt, memory: st.memory
     });
@@ -209,8 +227,18 @@ export default function App() {
   }
 
   // ================= conversations =================
+  // A running chat stream OR generation job pins the current conversation: the
+  // in-flight result must land in the conversation that started it, never in
+  // one the user switched to mid-job.
+  function convoBusy() {
+    if (isStreamingRef.current) { toast('Stop the current response first', 'warn'); return true; }
+    if (genBusyRef.current) { toast('A generation is running — stop it first', 'warn'); return true; }
+    return false;
+  }
+
   function startNewChat() {
-    if (isStreamingRef.current) { toast('Stop the current response first', 'warn'); return; }
+    if (convoBusy()) return;
+    loadedConvoRef.current = null;
     setCurrentId(null); setCurrentTitle('New chat'); setCurrentCost(0);
     setSysPrompt(''); setMemory(true);
     setPending([]); setMessages([]);
@@ -218,23 +246,30 @@ export default function App() {
   }
 
   async function openConvo(id) {
-    if (isStreamingRef.current) { toast('Stop the current response first', 'warn'); return; }
+    if (convoBusy()) return;
     const r = await api.convoGet(id);
     if (!r.ok) return;
     const c = r.convo;
+    loadedConvoRef.current = c;
     setCurrentId(c.id); setCurrentTitle(c.title); setCurrentCost(c.cost || 0);
     setSysPrompt(c.sysPrompt || '');
     setMemory(c.memory !== undefined ? c.memory : true);
     if (c.model) setModel(c.model);
     const who = modelLabel(c.model || stateRef.current.model);
+    // Attribute a reloaded image to the backend that made it (genParams.backend),
+    // matching the live-session label; only pre-backend files fall back to Forge.
+    const imageWho = (m) => (m.genParams && m.genParams.backend === 'comfy') ? 'ComfyUI' : 'Stable Diffusion';
     setMessages((c.messages || []).map(m => attachThinkToggle({
       uid: newUid(), role: m.role, content: m.content,
-      who: m.videoPath ? 'ComfyUI' : m.imagePath ? 'Stable Diffusion' : who,
+      who: m.videoPath ? 'ComfyUI' : m.imagePath ? imageWho(m) : who,
       attachNames: m.attachNames,
       reasoning: m.reasoning,
       citations: m.citations,
       imagePath: m.imagePath,
       videoPath: m.videoPath,
+      // a deliberately-stopped reply is marked so it reloads as stopped, not as
+      // a complete answer
+      stopped: m.stopped,
       // discriminator with backwards compat: files written before `kind`
       // existed mark SD results only by imagePath; plain messages are chat
       kind: m.kind || (m.videoPath ? 'video' : m.imagePath ? 'image' : 'chat'),
@@ -247,12 +282,12 @@ export default function App() {
   async function renameConvo(id, name) {
     const g = await api.convoGet(id);
     if (g.ok) { g.convo.title = name; await api.convoSave(g.convo); }
-    if (id === stateRef.current.currentId) setCurrentTitle(name);
+    if (id === stateRef.current.currentId) { setCurrentTitle(name); stateRef.current.currentTitle = name; }
     refreshConvos();
   }
 
   async function deleteConvo(id) {
-    if (isStreamingRef.current) { toast('Stop the current response first', 'warn'); return; }
+    if (convoBusy()) return;
     await api.convoDelete(id);
     if (id === stateRef.current.currentId) startNewChat();
     refreshConvos();
@@ -538,11 +573,15 @@ export default function App() {
         setCurrentCost(nextCost);
         stateRef.current.currentCost = nextCost;
       }
-      if (r.ok) await persistConvo(messagesRef.current);
+      // Persist on every outcome. persistConvo already strips the error bubble,
+      // so an errored turn still saves the user's message (previously it was
+      // lost — vanished on reload, and a brand-new chat saved nothing at all).
+      await persistConvo(messagesRef.current);
     } catch (err) {
       setMessages(prev => prev.map(m => m.requestId === requestId
         ? { ...m, streaming: false, fresh: false, error: 'Something went wrong: ' + String(err && err.message || err).slice(0, 200) }
         : m));
+      await persistConvo(messagesRef.current);
     } finally {
       activeReqRef.current = null;
       setStreaming(false);
@@ -780,6 +819,7 @@ export default function App() {
 
         {sdMounted && <SdPanel open={sdOpen} onToast={toast} onImage={appendSdImage} onVideo={appendVideo}
           onGenStart={beginGenCard} onGenFail={failGenCard}
+          onBusyChange={onGenBusyChange}
           convoImages={convoImages} controlRef={sdControlRef} />}
 
         <SidePanel open={sideOpen} paths={allowPaths} onAdd={addAllow} onRemove={removeAllow} />

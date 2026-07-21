@@ -155,4 +155,40 @@ describe('App integration: the card lives in the conversation and becomes the re
     await waitFor(() => expect(log.textContent).toContain('Generation failed: CUDA out of memory'));
     expect(log.querySelector('.gen-live')).toBeFalsy();
   });
+
+  it('a running generation pins the conversation: switching is blocked and the result lands where it started', async () => {
+    // A pre-existing OTHER conversation the user might try to switch to mid-job.
+    mock.savedConvos['other'] = { id: 'other', title: 'Other chat', model: 'm', messages: [{ role: 'user', content: 'hi' }], cost: 0, updated: 1 };
+
+    let resolveGen;
+    mock.api.comfy.generate = (p) => {
+      mock.calls.push(['comfy:generate', p]);
+      return new Promise(res => { resolveGen = res; });
+    };
+    await openPanelToVideo();
+    fireEvent.change(screen.getByPlaceholderText(/what to generate/), { target: { value: 'a fox clip' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Generate' }));
+
+    const log = document.getElementById('log');
+    await waitFor(() => expect(log.querySelector('.gen-live')).toBeTruthy());
+
+    // Try to leave the conversation while the job runs — must be blocked, and
+    // the live gen card must still be present (not stranded/vanished).
+    fireEvent.click(await screen.findByText('Other chat'));
+    // the "New chat" affordance too
+    const newBtn = screen.queryByRole('button', { name: /New chat|＋ New/i });
+    if (newBtn) fireEvent.click(newBtn);
+    expect(log.querySelector('.gen-live')).toBeTruthy();
+
+    // Completion delivers the result into the SAME (originating) conversation.
+    act(() => resolveGen({ ok: true, files: [{ path: 'D:\\x\\vid-1.mp4', name: 'vid-1.mp4' }], seed: 9, elapsed: 2 }));
+    await waitFor(() => expect(log.querySelector('video.gen-vid')).toBeTruthy());
+
+    // The originating conversation got the video; the untouched 'other' convo
+    // still has only its original single user message (no leaked video).
+    const originating = Object.values(mock.savedConvos).find(c => c.id !== 'other');
+    expect(originating.messages.some(m => m.kind === 'video')).toBe(true);
+    expect(mock.savedConvos['other'].messages.some(m => m.kind === 'video')).toBe(false);
+    expect(mock.savedConvos['other'].messages).toHaveLength(1);
+  });
 });

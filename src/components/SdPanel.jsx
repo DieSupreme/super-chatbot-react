@@ -103,7 +103,7 @@ function NumRow({ label, value, meta, onChange, allowNull, title }) {
   );
 }
 
-export default function SdPanel({ open, onToast, onImage, onVideo, onGenStart, onGenFail, convoImages, controlRef }) {
+export default function SdPanel({ open, onToast, onImage, onVideo, onGenStart, onGenFail, onBusyChange, convoImages, controlRef }) {
   // media and backend are SEPARATE axes. The toggle picks the media
   // ('image' | 'video'); the model/workflow picked below decides the backend
   // (Forge or ComfyUI) — the user never chooses a backend directly. In image
@@ -167,6 +167,11 @@ export default function SdPanel({ open, onToast, onImage, onVideo, onGenStart, o
   const [progress, setProgress] = useState({ progress: 0, eta: 0 });
   const [lastError, setLastError] = useState('');
   const [lastSeed, setLastSeed] = useState(null);
+
+  // Report the combined Forge+Comfy generation-busy state up to App, which uses
+  // it to pin the conversation while a job runs (so a result can't land in a
+  // conversation the user switched to mid-generation).
+  useEffect(() => { if (onBusyChange) onBusyChange(busy || comfyBusy); }, [busy, comfyBusy, onBusyChange]);
 
   // img2img / inpaint source: { b64, mime, label, w, h }
   const [srcImage, setSrcImage] = useState(null);
