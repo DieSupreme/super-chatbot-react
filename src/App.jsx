@@ -163,7 +163,13 @@ export default function App() {
       if (reasoning) b.reasoning += reasoning;
       if (!rafId.current) rafId.current = requestAnimationFrame(flushChunks);
     });
-    return () => { if (typeof off === 'function') off(); };
+    return () => {
+      if (typeof off === 'function') off();
+      // cancel any frame scheduled just before unmount and drop buffered chunks,
+      // so flushChunks can't fire setMessages on an unmounted tree
+      if (rafId.current) { cancelAnimationFrame(rafId.current); rafId.current = 0; }
+      chunkBuf.current = {};
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -564,6 +570,12 @@ export default function App() {
           // user hit Stop — keep whatever streamed, mark it
           return { ...m, streaming: false, fresh: false, thinkOpen: false, stopped: true };
         }
+        // A successful-but-empty stream (model returned nothing) would otherwise
+        // leave a blank bubble that vanishes on reload. Show it as a notice.
+        if (!r.full) {
+          return { ...m, streaming: false, fresh: false, thinkOpen: false,
+            error: 'The model returned an empty response.' };
+        }
         return { ...m, streaming: false, fresh: false, thinkOpen: false,
           content: r.full, citations: r.citations || [], reasoning: m.reasoning };
       }));
@@ -592,12 +604,21 @@ export default function App() {
   // ================= image generation turn =================
   async function generateImageTurn(prompt, base) {
     const st = stateRef.current;
+    // Register a requestId so the Composer's Stop button / Escape can abort a
+    // stalled image request (main aborts the fetch under the same channel as
+    // chat:stop). Without this the Stop button was inert and the composer stayed
+    // locked until the app restarted.
+    const requestId = ++reqCounter.current;
+    activeReqRef.current = requestId;
     setStreaming(true);
     const uid = newUid();
     setMessages([...base, { uid, role: 'assistant', content: '', imagePending: true, who: modelLabel(st.model) }]);
     try {
-      const r = await api.generateImage({ model: st.settings.imgModel, prompt, aspect: st.settings.imgAspect });
-      if (!r.ok) {
+      const r = await api.generateImage({ model: st.settings.imgModel, prompt, aspect: st.settings.imgAspect, requestId });
+      if (r.stopped) {
+        // user aborted — drop the pending bubble entirely
+        setMessages(prev => prev.filter(m => m.uid !== uid));
+      } else if (!r.ok) {
         setMessages(prev => prev.map(m => m.uid === uid
           ? { ...m, imagePending: false, error: `Image error${r.status ? ' ' + r.status : ''}: ${(r.error || 'unknown').slice(0, 300)}` }
           : m));
@@ -618,6 +639,7 @@ export default function App() {
         ? { ...m, imagePending: false, error: 'Image generation failed: ' + String(err && err.message || err).slice(0, 200) }
         : m));
     } finally {
+      activeReqRef.current = null;
       setStreaming(false);
       inputRef.current && inputRef.current.focus();
     }

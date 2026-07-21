@@ -444,7 +444,13 @@ ipcMain.handle('settings:save', (_e, s) => {
 });
 
 // ---------- Image generation ----------
-ipcMain.handle('image:generate', async (_e, { model, prompt, aspect }) => {
+ipcMain.handle('image:generate', async (_e, { model, prompt, aspect, requestId }) => {
+  // Register under the same activeStreams map chat:stop uses, so Stop/Escape in
+  // the renderer can abort a stalled image request instead of hanging forever
+  // with the composer locked. A 5-minute ceiling covers a dead endpoint.
+  const controller = new AbortController();
+  if (requestId != null) activeStreams[requestId] = controller;
+  const timer = setTimeout(() => controller.abort(), 5 * 60 * 1000);
   try {
     const key = readKeyMaterial();
     if (!key) return { ok: false, error: 'No API key saved' };
@@ -454,7 +460,8 @@ ipcMain.handle('image:generate', async (_e, { model, prompt, aspect }) => {
       body: JSON.stringify({
         model, prompt,
         ...(aspect && aspect !== 'auto' ? { aspect_ratio: aspect } : {})
-      })
+      }),
+      signal: controller.signal
     });
     if (!res.ok) {
       const text = await res.text();
@@ -468,7 +475,13 @@ ipcMain.handle('image:generate', async (_e, { model, prompt, aspect }) => {
     if (!b64) return { ok: false, error: 'no image returned' };
     const cost = data.usage && typeof data.usage.cost === 'number' ? data.usage.cost : 0;
     return { ok: true, b64, mime, cost };
-  } catch (err) { return { ok: false, error: err.message }; }
+  } catch (err) {
+    if (err.name === 'AbortError') return { ok: false, stopped: true };
+    return { ok: false, error: err.message };
+  } finally {
+    clearTimeout(timer);
+    if (requestId != null) delete activeStreams[requestId];
+  }
 });
 
 // ---------- Save a base64 image to disk ----------
@@ -510,6 +523,11 @@ ipcMain.handle('chat:send', async (_e, { model, messages, requestId, web, temp, 
         }
         return true;
       });
+      // If every part was a dropped image (image-only send), an empty content
+      // array 400s the whole turn — substitute a placeholder text part so the
+      // request still goes through, which is exactly what the sanitizer exists
+      // to prevent.
+      if (!parts.length) return { ...msg, content: '[attachment removed]' };
       return { ...msg, content: parts.length === 1 && parts[0].type === 'text' ? parts[0].text : parts };
     });
 
@@ -527,6 +545,7 @@ ipcMain.handle('chat:send', async (_e, { model, messages, requestId, web, temp, 
     });
     if (!res.ok) {
       const text = await res.text();
+      delete activeStreams[requestId];
       return { ok: false, status: res.status, error: text.slice(0, 500) };
     }
     const reader = res.body.getReader();
@@ -557,6 +576,13 @@ ipcMain.handle('chat:send', async (_e, { model, messages, requestId, web, temp, 
     const full = sse.full;
     const usage = sse.usage;
     const citations = sse.citations;
+    // A mid-stream error frame means the turn failed even though the HTTP
+    // response was 200 and some tokens may have streamed. Surface it as an error
+    // instead of finalizing a silently-truncated reply as success.
+    if (sse.error) {
+      delete activeStreams[requestId];
+      return { ok: false, error: sse.error };
+    }
     // OpenRouter returns actual cost in usage.cost (USD) when usage.include is set
     const cost = usage && typeof usage.cost === 'number' ? usage.cost : 0;
     const tokens = usage ? { prompt: usage.prompt_tokens || 0, completion: usage.completion_tokens || 0, total: usage.total_tokens || 0 } : null;

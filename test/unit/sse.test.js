@@ -29,6 +29,29 @@ test('drainSseBuffer with consumeAll processes final partial line', () => {
   assert.equal(state.full, 'end');
 });
 
+test('processLine captures a mid-stream error frame (first error wins)', () => {
+  const state = createSseState();
+  state.processLine('data: ' + JSON.stringify({ choices: [{ delta: { content: 'partial' } }] }));
+  state.processLine('data: ' + JSON.stringify({ error: { message: 'rate limited', code: 429 } }));
+  state.processLine('data: ' + JSON.stringify({ error: { message: 'second error' } }));
+  assert.equal(state.error, 'rate limited');
+  // content that streamed before the error is still accumulated; the caller
+  // decides to surface the error rather than the truncated content
+  assert.equal(state.full, 'partial');
+});
+
+test('processLine accepts a string-form error', () => {
+  const state = createSseState();
+  state.processLine('data: ' + JSON.stringify({ error: 'moderation_blocked' }));
+  assert.equal(state.error, 'moderation_blocked');
+});
+
+test('processLine leaves error null on a clean stream', () => {
+  const state = createSseState();
+  state.processLine('data: ' + JSON.stringify({ choices: [{ delta: { content: 'ok' } }] }));
+  assert.equal(state.error, null);
+});
+
 test('processLine dedupes url citations', () => {
   const state = createSseState();
   const payload = { choices: [{ delta: { annotations: [{ type: 'url_citation', url_citation: { url: 'https://a.com', title: 'A' } }] } }] };

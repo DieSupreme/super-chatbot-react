@@ -1,7 +1,7 @@
 // Pure SSE line parsing for OpenRouter chat streaming (testable without Electron).
 
 function createSseState() {
-  const state = { full: '', usage: null, citations: [] };
+  const state = { full: '', usage: null, citations: [], error: null };
   state.processLine = (line) => {
     const t = line.trim();
     if (!t.startsWith('data:')) return;
@@ -9,6 +9,13 @@ function createSseState() {
     if (data === '[DONE]') return;
     try {
       const json = JSON.parse(data);
+      // Mid-stream error frame (rate limit, moderation, provider failure). The
+      // stream then closes; without capturing this the turn would finalize as a
+      // silent empty/truncated success. First error wins.
+      if (json.error && !state.error) {
+        const e = json.error;
+        state.error = typeof e === 'string' ? e : (e.message || 'stream error');
+      }
       const d = json.choices?.[0]?.delta || {};
       if (d.content) state.full += d.content;
       const anns = d.annotations || json.choices?.[0]?.message?.annotations;

@@ -100,6 +100,84 @@ test('chat:send reads the saved key from disk and rejects when none is saved', a
   } finally { global.fetch = origFetch; }
 });
 
+// A ReadableStream-ish reader that yields the given UTF-8 chunks then done.
+function fakeReader(chunks) {
+  let i = 0;
+  const enc = new TextEncoder();
+  return { read: async () => (i < chunks.length ? { done: false, value: enc.encode(chunks[i++]) } : { done: true }) };
+}
+
+test('chat:send surfaces a mid-stream error frame as a failure, not a truncated success', async () => {
+  await invoke('key:save', 'sk-or-v1-x');
+  const origFetch = global.fetch;
+  global.fetch = async () => ({
+    ok: true,
+    body: { getReader: () => fakeReader([
+      'data: {"choices":[{"delta":{"content":"par"}}]}\n',
+      'data: {"error":{"message":"rate limited","code":429}}\n',
+      'data: [DONE]\n'
+    ]) }
+  });
+  try {
+    const r = await invoke('chat:send', { model: 'm', messages: [{ role: 'user', content: 'hi' }], requestId: 10 });
+    assert.strictEqual(r.ok, false);
+    assert.match(r.error, /rate limited/);
+  } finally { global.fetch = origFetch; }
+});
+
+test('chat:send does not leak the AbortController on a non-ok HTTP response', async () => {
+  await invoke('key:save', 'sk-or-v1-x');
+  const origFetch = global.fetch;
+  global.fetch = async () => ({ ok: false, status: 429, text: async () => 'slow down' });
+  try {
+    const r = await invoke('chat:send', { model: 'm', messages: [], requestId: 11 });
+    assert.strictEqual(r.ok, false);
+    assert.strictEqual(r.status, 429);
+    // A follow-up stop for that id must find nothing registered (no leak).
+    const stop = await invoke('chat:stop', 11);
+    assert.strictEqual(stop.ok, false);
+  } finally { global.fetch = origFetch; }
+});
+
+test('chat:send sanitizer substitutes placeholder text when every part is a dropped image', async () => {
+  await invoke('key:save', 'sk-or-v1-x');
+  let sentBody = null;
+  const origFetch = global.fetch;
+  global.fetch = async (_url, opts) => {
+    sentBody = JSON.parse(opts.body);
+    return { ok: true, body: { getReader: () => fakeReader(['data: [DONE]\n']) } };
+  };
+  try {
+    // one image_url part with a malformed url => dropped => content would be []
+    await invoke('chat:send', {
+      model: 'm', requestId: 12,
+      messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'not-a-data-url' } }] }]
+    });
+    assert.strictEqual(sentBody.messages[0].content, '[attachment removed]');
+  } finally { global.fetch = origFetch; }
+});
+
+test('image:generate registers under chat:stop and aborts', async () => {
+  await invoke('key:save', 'sk-or-v1-x');
+  const origFetch = global.fetch;
+  // fetch that rejects with an AbortError when the signal fires
+  global.fetch = (_url, opts) => new Promise((_res, rej) => {
+    opts.signal.addEventListener('abort', () => {
+      const e = new Error('aborted'); e.name = 'AbortError'; rej(e);
+    });
+  });
+  try {
+    const p = invoke('image:generate', { model: 'img', prompt: 'x', requestId: 20 });
+    // stop it via the shared channel
+    await new Promise(r => setTimeout(r, 10));
+    const stop = await invoke('chat:stop', 20);
+    assert.strictEqual(stop.ok, true);
+    const r = await p;
+    assert.strictEqual(r.ok, false);
+    assert.strictEqual(r.stopped, true);
+  } finally { global.fetch = origFetch; }
+});
+
 test('conversations: atomic write leaves no partial file, and a corrupt file is quarantined not clobbered', async () => {
   // Seed a valid conversation via the handler.
   await invoke('convo:save', { id: 'c1', title: 'first', model: 'm', messages: [{ role: 'user', content: 'a' }] });
