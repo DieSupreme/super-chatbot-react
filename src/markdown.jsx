@@ -20,50 +20,87 @@ export function extFor(lang) {
 }
 
 // ---------- light syntax tint ----------
-// Produces an HTML string from *escaped* code, exactly like the vanilla build.
-// Injected via dangerouslySetInnerHTML — safe because escapeHtml runs first,
-// and the only markup added afterwards is our own token spans.
+// Produces an HTML string injected via dangerouslySetInnerHTML. It is safe
+// because tokenization runs on the RAW code and every emitted piece — literal
+// text AND the inner text of each token — is escaped with escapeHtml before it
+// reaches the output. The only unescaped markup is our own token spans.
+//
+// Tokenizing on the raw string (not on already-escaped HTML) is what fixes the
+// old corruption: escaping first produced entities like &#39; whose '#' and
+// digits were then matched as a comment / number, mangling any code containing
+// an apostrophe or single-quoted string.
 function escapeHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
+const KEYWORDS = /^(?:const|let|var|function|return|if|else|for|while|class|new|import|export|from|async|await|def|elif|try|except|catch|throw|true|false|null|undefined|this|public|private|void|int|string|bool)$/;
 export function highlight(code) {
-  let h = escapeHtml(code);
-  h = h.replace(/(&quot;.*?&quot;|&#39;.*?&#39;|`[^`]*`)/g, '<span class="tok-str">$1</span>');
-  h = h.replace(/((?:\/\/|#).*?)(\n|$)/g, '<span class="tok-com">$1</span>$2');
-  h = h.replace(/\b(const|let|var|function|return|if|else|for|while|class|new|import|export|from|async|await|def|elif|try|except|catch|throw|true|false|null|undefined|this|public|private|void|int|string|bool)\b/g, '<span class="tok-kw">$1</span>');
-  h = h.replace(/\b(\d+\.?\d*)\b/g, '<span class="tok-num">$1</span>');
-  return h;
+  // One pass, priority by alternation order: strings (double/single/backtick,
+  // escape-aware, no newline crossing) → line comments (// or #) → identifiers
+  // (classified as keyword or left literal) → numbers. A '#' or digits INSIDE a
+  // string match the string alt first, so they never start a spurious comment
+  // or number.
+  const token = /("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`[^`]*`)|((?:\/\/|#)[^\n]*)|([A-Za-z_$][\w$]*)|(\d+\.?\d*)/g;
+  let out = '', last = 0, m;
+  while ((m = token.exec(code)) !== null) {
+    if (m.index > last) out += escapeHtml(code.slice(last, m.index));
+    if (m[1]) out += '<span class="tok-str">' + escapeHtml(m[1]) + '</span>';
+    else if (m[2]) out += '<span class="tok-com">' + escapeHtml(m[2]) + '</span>';
+    else if (m[3]) out += KEYWORDS.test(m[3]) ? '<span class="tok-kw">' + escapeHtml(m[3]) + '</span>' : escapeHtml(m[3]);
+    else out += '<span class="tok-num">' + escapeHtml(m[4]) + '</span>';
+    last = token.lastIndex;
+  }
+  if (last < code.length) out += escapeHtml(code.slice(last));
+  return out;
 }
 
 // ---------- block-level parse ----------
-// Splits the source on ``` fences first, then parses the text between them.
-// Segment kinds: code {lang, fname, raw} · edit {path, content} · text blocks.
+// Splits the source on ``` fences, then parses the text between them. Parsing is
+// line-based: an opening fence is a line starting with ```; the closing fence is
+// a line that is exactly ``` (trailing whitespace allowed). This means a fence
+// body may itself contain ``` on a non-bare line without closing early, and an
+// unterminated fence runs to end-of-message instead of swallowing the rest as
+// text. Segment kinds: code {lang, fname, raw} · edit {path, content} · text.
+function makeCodeSeg(info, raw) {
+  if (info === 'edit' || info.startsWith('edit ')) {
+    // ```edit path=C:\full\path.js
+    const pm = info.match(/path=(.+)$/);
+    return { kind: 'edit', path: pm ? pm[1].trim() : '(unknown)', content: raw };
+  }
+  // info can be "js", "js:app.js", or "app.js"
+  let lang = info, fname = null;
+  if (info.includes(':')) { [lang, fname] = info.split(':'); fname = fname.trim(); }
+  else if (/\.[a-zA-Z0-9]{1,5}$/.test(info)) { fname = info; lang = info.split('.').pop(); }
+  if (!fname) fname = guessFilename(lang, raw);
+  const safeLang = (lang || 'code').toLowerCase();
+  if (!fname) fname = 'snippet.' + extFor(safeLang);
+  return { kind: 'code', lang: safeLang, fname, raw };
+}
 export function parseSegments(src) {
   const segs = [];
   if (!src) return segs;
-  const re = /```([^\n`]*)\n([\s\S]*?)```/g;
-  let last = 0, m;
-  while ((m = re.exec(src)) !== null) {
-    if (m.index > last) segs.push({ kind: 'text', text: src.slice(last, m.index) });
-    const info = m[1].trim();
-    const raw = m[2].replace(/\n$/, '');
-    if (info === 'edit' || info.startsWith('edit ')) {
-      // ```edit path=C:\full\path.js
-      const pm = info.match(/path=(.+)$/);
-      segs.push({ kind: 'edit', path: pm ? pm[1].trim() : '(unknown)', content: raw });
-    } else {
-      // info can be "js", "js:app.js", or "app.js"
-      let lang = info, fname = null;
-      if (info.includes(':')) { [lang, fname] = info.split(':'); fname = fname.trim(); }
-      else if (/\.[a-zA-Z0-9]{1,5}$/.test(info)) { fname = info; lang = info.split('.').pop(); }
-      if (!fname) fname = guessFilename(lang, raw);
-      const safeLang = (lang || 'code').toLowerCase();
-      if (!fname) fname = 'snippet.' + extFor(safeLang);
-      segs.push({ kind: 'code', lang: safeLang, fname, raw });
+  const lines = src.split('\n');
+  let text = [];         // pending text lines
+  const flushText = () => {
+    if (text.length) { segs.push({ kind: 'text', text: text.join('\n') }); text = []; }
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const open = lines[i].match(/^```(.*)$/);
+    if (!open) { text.push(lines[i]); continue; }
+    // opening fence — collect body until a bare ``` line (or end of input)
+    flushText();
+    const info = open[1].trim();
+    const body = [];
+    let closed = false;
+    let j = i + 1;
+    for (; j < lines.length; j++) {
+      if (/^```\s*$/.test(lines[j])) { closed = true; break; }
+      body.push(lines[j]);
     }
-    last = re.lastIndex;
+    segs.push(makeCodeSeg(info, body.join('\n')));
+    // resume after the closing fence; an unterminated fence consumes to the end
+    i = closed ? j : lines.length;
   }
-  if (last < src.length) segs.push({ kind: 'text', text: src.slice(last) });
+  flushText();
   return segs;
 }
 
