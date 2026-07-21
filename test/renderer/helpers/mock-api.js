@@ -7,8 +7,9 @@ export function createMockApi() {
   const tick = (ms = 25) => new Promise(r => setTimeout(r, ms));
 
   const api = {
-    loadKey: async () => ({ ok: true, key: 'sk-or-v1-test' }),
+    loadKey: async () => ({ ok: true, present: true }),
     saveKey: async () => ({ ok: true, encrypted: true }),
+    onNotice: () => () => {},
     clearKey: async () => ({ ok: true }),
     getSettings: async () => ({ ok: true, settings: {} }),
     saveSettings: async () => ({ ok: true }),

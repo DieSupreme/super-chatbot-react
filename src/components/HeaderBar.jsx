@@ -2,13 +2,13 @@ import React from 'react';
 import { MODELS, fmtCost } from '../models.js';
 
 export default function HeaderBar({
-  model, setModel, keyVal, setKeyVal, keyCompact, setKeyCompact, onSaveKey,
+  model, setModel, keyVal, setKeyVal, keyPresent, keyCompact, setKeyCompact, onSaveKey,
   cost, memory, setMemory, web, setWeb, imageMode, setImageMode,
   onToggleSysPrompt, onToggleSide, onOpenSettings, keyFieldRef,
   view, onToggleView, sdOpen, onToggleSd
 }) {
-  const keyOk = keyVal.trim().startsWith('sk-or-');
-  const keyState = keyOk ? 'key ready' : (keyVal ? 'check key' : 'no key');
+  const keyOk = keyVal.trim().startsWith('sk-or-') || keyPresent;
+  const keyState = keyVal.trim().startsWith('sk-or-') ? 'key ready' : (keyVal ? 'check key' : (keyPresent ? 'key ready' : 'no key'));
 
   return (
     <header>

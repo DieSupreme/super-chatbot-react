@@ -14,19 +14,42 @@ const SETTINGS_FILE = path.join(app.getPath('userData'), 'settings.json');
 
 let win;
 
+// Atomic write: write a sibling temp file then rename over the target, so a
+// crash or power loss mid-write can never truncate the real store. The bytes
+// that land on disk are identical to a direct write (format-compatible).
+function writeFileAtomic(file, data) {
+  const tmp = file + '.tmp-' + process.pid;
+  fs.writeFileSync(tmp, data);
+  fs.renameSync(tmp, file);
+}
+// Preserve an unreadable store instead of overwriting it: rename it aside as a
+// timestamped .corrupt backup so nothing is silently destroyed and the data is
+// recoverable by hand.
+function quarantineFile(file) {
+  try { fs.renameSync(file, file + '.corrupt-' + Date.now()); } catch (_) {}
+}
+// Surface a one-off notice to the renderer (shown as a toast). Receive-only
+// main->renderer event; never carries key material.
+function notifyUser(msg, kind) {
+  try { if (win && !win.isDestroyed()) win.webContents.send('app:notice', { msg, kind: kind || 'warn' }); } catch (_) {}
+}
+
 // In-memory set of absolute paths the bot is permitted to edit.
 // Persisted to disk so the allow-list survives restarts.
 let allowed = new Set();
 function loadAllowed() {
   try {
     if (fs.existsSync(ALLOW_FILE)) {
+      // Keep every persisted entry — a path that fails existsSync now (unmounted
+      // drive, renamed-back file) must not be silently and permanently pruned.
+      // Existence is checked at point of use (allow:read / file:write) instead.
       const arr = JSON.parse(fs.readFileSync(ALLOW_FILE, 'utf8'));
-      allowed = new Set(arr.filter(p => fs.existsSync(p)));
+      allowed = new Set(arr);
     }
   } catch (_) { allowed = new Set(); }
 }
 function saveAllowed() {
-  try { fs.writeFileSync(ALLOW_FILE, JSON.stringify([...allowed], null, 2)); } catch (_) {}
+  try { writeFileAtomic(ALLOW_FILE, JSON.stringify([...allowed], null, 2)); } catch (_) {}
 }
 
 function createWindow() {
@@ -63,23 +86,30 @@ app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 
 // ---------- Secure key storage ----------
+// The decrypted OpenRouter key NEVER leaves main. key:load returns only whether
+// a key is present (for the settings UI); chat/image handlers read the key from
+// disk here, so it never lives in renderer state or a request payload the
+// renderer can see. On-disk format is unchanged (PLAIN: prefix or safeStorage).
+function readKeyMaterial() {
+  if (!fs.existsSync(KEY_FILE)) return '';
+  const buf = fs.readFileSync(KEY_FILE);
+  if (buf.slice(0, 6).toString() === 'PLAIN:') return buf.slice(6).toString('utf8');
+  return safeStorage.decryptString(buf);
+}
 ipcMain.handle('key:save', (_e, key) => {
   try {
     if (!safeStorage.isEncryptionAvailable()) {
-      fs.writeFileSync(KEY_FILE, Buffer.from('PLAIN:' + key, 'utf8'));
+      writeFileAtomic(KEY_FILE, Buffer.from('PLAIN:' + key, 'utf8'));
       return { ok: true, encrypted: false };
     }
-    fs.writeFileSync(KEY_FILE, safeStorage.encryptString(key));
+    writeFileAtomic(KEY_FILE, safeStorage.encryptString(key));
     return { ok: true, encrypted: true };
   } catch (err) { return { ok: false, error: err.message }; }
 });
+// Returns presence only — never the key itself.
 ipcMain.handle('key:load', () => {
-  try {
-    if (!fs.existsSync(KEY_FILE)) return { ok: true, key: '' };
-    const buf = fs.readFileSync(KEY_FILE);
-    if (buf.slice(0, 6).toString() === 'PLAIN:') return { ok: true, key: buf.slice(6).toString('utf8') };
-    return { ok: true, key: safeStorage.decryptString(buf) };
-  } catch (err) { return { ok: false, error: err.message }; }
+  try { return { ok: true, present: !!readKeyMaterial() }; }
+  catch (err) { return { ok: false, error: err.message, present: false }; }
 });
 ipcMain.handle('key:clear', () => {
   try { if (fs.existsSync(KEY_FILE)) fs.unlinkSync(KEY_FILE); return { ok: true }; }
@@ -234,12 +264,25 @@ ipcMain.handle('allow:read', (_e, p) => {
 
 // ---------- Conversation persistence ----------
 // All conversations live in one JSON file: { [id]: {id, title, model, messages, cost, updated} }
+// A parse failure here must NEVER be treated as "empty" — doing so would let
+// the next convo:save rewrite the file with only the new conversation, erasing
+// all prior history. Instead the corrupt file is quarantined (renamed aside)
+// and the caller is told, so saves start from a clean {} without destroying the
+// unreadable original. readError is surfaced so convo:save can refuse to clobber.
+let convoReadError = false;
 function readConvos() {
-  try { return fs.existsSync(CONVO_FILE) ? JSON.parse(fs.readFileSync(CONVO_FILE, 'utf8')) : {}; }
-  catch (_) { return {}; }
+  convoReadError = false;
+  if (!fs.existsSync(CONVO_FILE)) return {};
+  try { return JSON.parse(fs.readFileSync(CONVO_FILE, 'utf8')); }
+  catch (_) {
+    convoReadError = true;
+    quarantineFile(CONVO_FILE);
+    notifyUser('conversations.json was unreadable and has been set aside as a .corrupt backup. Starting fresh; your old file is recoverable by hand.', 'warn');
+    return {};
+  }
 }
 function writeConvos(obj) {
-  try { fs.writeFileSync(CONVO_FILE, JSON.stringify(obj)); return true; } catch (_) { return false; }
+  try { writeFileAtomic(CONVO_FILE, JSON.stringify(obj)); return true; } catch (_) { return false; }
 }
 ipcMain.handle('convo:list', () => {
   const all = readConvos();
@@ -383,16 +426,28 @@ ipcMain.handle('settings:save', (_e, s) => {
   try {
     let existing = {};
     if (fs.existsSync(SETTINGS_FILE)) {
-      try { existing = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')); } catch (_) {}
+      try {
+        existing = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8'));
+      } catch (_) {
+        // Unparseable existing settings: do NOT merge into {} — that would drop
+        // every key another version/panel wrote. Quarantine the bad file and
+        // start clean, preserving the original as a .corrupt backup.
+        quarantineFile(SETTINGS_FILE);
+        notifyUser('settings.json was unreadable and has been set aside as a .corrupt backup. Reverting to defaults for the affected values.', 'warn');
+        existing = {};
+      }
     }
-    fs.writeFileSync(SETTINGS_FILE, JSON.stringify({ ...existing, ...s }));
+    // Merge preserves unknown keys from other versions/panels (spread of existing).
+    writeFileAtomic(SETTINGS_FILE, JSON.stringify({ ...existing, ...s }));
     return { ok: true };
   } catch (err) { return { ok: false, error: err.message }; }
 });
 
 // ---------- Image generation ----------
-ipcMain.handle('image:generate', async (_e, { key, model, prompt, aspect }) => {
+ipcMain.handle('image:generate', async (_e, { model, prompt, aspect }) => {
   try {
+    const key = readKeyMaterial();
+    if (!key) return { ok: false, error: 'No API key saved' };
     const res = await fetch('https://openrouter.ai/api/v1/images', {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json' },
@@ -434,10 +489,12 @@ ipcMain.handle('chat:stop', (_e, requestId) => {
   return { ok: false };
 });
 
-ipcMain.handle('chat:send', async (_e, { key, model, messages, requestId, web, temp, maxTok }) => {
+ipcMain.handle('chat:send', async (_e, { model, messages, requestId, web, temp, maxTok }) => {
   const controller = new AbortController();
   activeStreams[requestId] = controller;
   try {
+    const key = readKeyMaterial();
+    if (!key) { delete activeStreams[requestId]; return { ok: false, error: 'No API key saved' }; }
     // Sanitize every message: ensure image_url data URLs are well-formed.
     // Drops any image part missing a mime type or base64 body so the request
     // never fails the whole turn on one bad attachment.

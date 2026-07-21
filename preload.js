@@ -28,6 +28,12 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('chat:chunk', handler);
     return () => ipcRenderer.removeListener('chat:chunk', handler);
   },
+  // one-off app notices (e.g. a storage file was quarantined). Receive-only.
+  onNotice: (cb) => {
+    const handler = (_e, data) => cb(data);
+    ipcRenderer.on('app:notice', handler);
+    return () => ipcRenderer.removeListener('app:notice', handler);
+  },
   // uploads
   pickFiles: () => ipcRenderer.invoke('files:pick'),
   readFiles: (paths) => ipcRenderer.invoke('files:read', paths),

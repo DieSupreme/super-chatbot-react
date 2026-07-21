@@ -20,7 +20,12 @@ const newConvoId = () => 'c_' + Date.now().toString(36) + Math.random().toString
 
 export default function App() {
   // ---------- key ----------
+  // keyVal holds ONLY what the user is currently typing into the save field.
+  // The saved key never comes back to the renderer — keyPresent tracks whether
+  // one exists on disk (main reads it directly when sending), so nothing here
+  // ever holds or transmits key material.
   const [keyVal, setKeyVal] = useState('');
+  const [keyPresent, setKeyPresent] = useState(false);
   const [keyCompact, setKeyCompact] = useState(false);
   const keyFieldRef = useRef(null);
 
@@ -103,7 +108,7 @@ export default function App() {
 
   // refs that mirror values async handlers need to read fresh
   const stateRef = useRef({});
-  stateRef.current = { keyVal, model, memory, web, imageMode, settings, sysPrompt,
+  stateRef.current = { keyVal, keyPresent, model, memory, web, imageMode, settings, sysPrompt,
     currentId, currentTitle, currentCost, pending, view };
 
   // ================= boot =================
@@ -117,7 +122,7 @@ export default function App() {
         if (merged.defaultModel) setModel(merged.defaultModel);
       } catch (_) {}
       const r = await api.loadKey();
-      if (r.ok && r.key) { setKeyVal(r.key); setKeyCompact(true); }
+      if (r.ok && r.present) { setKeyPresent(true); setKeyCompact(true); }
       refreshConvos();
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -127,6 +132,13 @@ export default function App() {
     const r = await api.convoList();
     if (r.ok) setConvos(r.list);
   }
+
+  // Surface one-off main-process notices (e.g. a storage file was quarantined).
+  useEffect(() => {
+    if (typeof api.onNotice !== 'function') return;
+    const off = api.onNotice(({ msg, kind }) => toast(msg, kind || 'warn'));
+    return () => { if (typeof off === 'function') off(); };
+  }, [toast]);
 
   // ================= streaming chunk pipeline =================
   // Chunks arrive faster than React should re-render, so they're buffered in
@@ -261,7 +273,7 @@ export default function App() {
     const k = keyVal.trim();
     if (!k.startsWith('sk-or-')) { toast('Paste a valid key first — it starts with sk-or-v1-', 'warn'); return; }
     const r = await api.saveKey(k);
-    if (r.ok) { toast(r.encrypted ? 'API key saved (encrypted)' : 'API key saved'); setKeyCompact(true); }
+    if (r.ok) { toast(r.encrypted ? 'API key saved (encrypted)' : 'API key saved'); setKeyPresent(true); setKeyCompact(true); }
     else toast('Could not save the key: ' + (r.error || 'unknown error'), 'warn');
   }
 
@@ -417,9 +429,11 @@ export default function App() {
   async function sendMessage() {
     const st = stateRef.current;
     const text = input.trim();
-    const key = st.keyVal.trim();
+    // A key the user just typed but hasn't saved still needs saving first (main
+    // reads the SAVED key from disk); otherwise require a saved key is present.
+    const keyReady = st.keyPresent || st.keyVal.trim().startsWith('sk-or-');
     if (!text && !st.pending.length) return;
-    if (!key.startsWith('sk-or-')) { toast('Paste your OpenRouter key first', 'warn'); return; }
+    if (!keyReady) { toast('Paste your OpenRouter key first', 'warn'); return; }
 
     // Image generation mode
     if (st.imageMode) {
@@ -432,7 +446,7 @@ export default function App() {
       const base = [...messagesRef.current, userMsg];
       setMessages(base);
       setInput('');
-      await generateImageTurn(text, key, base);
+      await generateImageTurn(text, base);
       return;
     }
 
@@ -472,7 +486,6 @@ export default function App() {
   // streams into a placeholder assistant message, then finalizes it in place.
   async function runCompletion(base) {
     const st = stateRef.current;
-    const key = st.keyVal.trim();
     const allowR = await api.allowList();
 
     // Memory ON: whole conversation. Memory OFF: only the latest user turn.
@@ -500,7 +513,7 @@ export default function App() {
 
     try {
       const r = await api.sendChat({
-        key, model: st.model, messages: msgs, requestId,
+        model: st.model, messages: msgs, requestId,
         web: st.web, temp: st.settings.temp, maxTok: st.settings.maxTok
       });
       flushChunksNow();   // drain any buffered chunks before finalizing
@@ -538,13 +551,13 @@ export default function App() {
   }
 
   // ================= image generation turn =================
-  async function generateImageTurn(prompt, key, base) {
+  async function generateImageTurn(prompt, base) {
     const st = stateRef.current;
     setStreaming(true);
     const uid = newUid();
     setMessages([...base, { uid, role: 'assistant', content: '', imagePending: true, who: modelLabel(st.model) }]);
     try {
-      const r = await api.generateImage({ key, model: st.settings.imgModel, prompt, aspect: st.settings.imgAspect });
+      const r = await api.generateImage({ model: st.settings.imgModel, prompt, aspect: st.settings.imgAspect });
       if (!r.ok) {
         setMessages(prev => prev.map(m => m.uid === uid
           ? { ...m, imagePending: false, error: `Image error${r.status ? ' ' + r.status : ''}: ${(r.error || 'unknown').slice(0, 300)}` }
@@ -732,7 +745,7 @@ export default function App() {
     <div className="app">
       <HeaderBar
         model={model} setModel={setModel}
-        keyVal={keyVal} setKeyVal={setKeyVal}
+        keyVal={keyVal} setKeyVal={setKeyVal} keyPresent={keyPresent}
         keyCompact={keyCompact} setKeyCompact={setKeyCompact}
         onSaveKey={saveKey} keyFieldRef={keyFieldRef}
         cost={currentCost}

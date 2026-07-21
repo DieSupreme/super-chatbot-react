@@ -35,6 +35,7 @@ const stub = new Proxy({}, {
     if (name === 'writeClipboard') return () => {};
     if (name === 'getPathForFile') return () => null;
     if (name === 'onChunk') return () => () => {};
+    if (name === 'onNotice') return () => () => {};
     return stubFn;
   }
 });
