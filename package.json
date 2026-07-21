@@ -1,6 +1,6 @@
 {
   "name": "super-chatbot-react",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "description": "Super Chatbot — React rebuild. Multi-model AI chat through OpenRouter, with file uploads and permissioned file editing.",
   "main": "main.js",
   "scripts": {

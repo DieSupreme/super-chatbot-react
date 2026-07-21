@@ -60,6 +60,23 @@ describe('GenCard: live preview streams into the chat message', () => {
     render(<ChatLog messages={[genMsg]} {...logProps} />);
     expect(screen.queryByRole('button', { name: 'Copy' })).not.toBeInTheDocument();
   });
+
+  it('an OpenRouter inline image is not treated as chat: no text Regenerate/Edit, no broken Forge actions', () => {
+    // m.image (inline b64), no kind, no imagePath, no genParams — the shape
+    // App.generateImageTurn produces for an OpenRouter image.
+    const imgMsg = { uid: 'i1', role: 'assistant', who: 'Gemini',
+      image: { b64: 'aGk=', mime: 'image/png' }, content: '[generated image: a fox]' };
+    render(<ChatLog messages={[imgMsg]} {...logProps} />);
+    // it renders as an image, not a chat bubble (alt is the content marker)
+    expect(screen.getByRole('img')).toBeInTheDocument();
+    expect(screen.getByAltText(/generated image: a fox/)).toBeInTheDocument();
+    // the chat affordances that would run a PAID text completion must be absent
+    expect(screen.queryByRole('button', { name: /Regenerate/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Edit my message/ })).not.toBeInTheDocument();
+    // and no disk-only Forge actions (they'd pass an undefined path)
+    expect(screen.queryByRole('button', { name: /img2img/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /start image/ })).not.toBeInTheDocument();
+  });
 });
 
 describe('ComfyBody wiring: onGenStart / genUid / onGenFail', () => {

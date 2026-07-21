@@ -434,17 +434,6 @@
       "node_type": "VHS_VideoCombine",
       "node_title": "OUTPUT VIDEO"
     },
-    "start_image_upload": {
-      "node": "167",
-      "input": "upload",
-      "type": "text",
-      "default": "image",
-      "hidden": true,
-      "label": "Upload",
-      "group": "START IMAGE (load your image here)",
-      "node_type": "LoadImage",
-      "node_title": "START IMAGE (load your image here)"
-    },
     "text_encoder_type": {
       "node": "346",
       "input": "type",

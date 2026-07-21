@@ -169,3 +169,17 @@ Nothing. Every check ran to completion on this machine.
 - New capability you now have for free: `workflows/` accepts ComfyUI's
   DEFAULT Ctrl+S export (UI/graph format) — no more "Save (API format)"
   dance. Any `<name>.json` + manifest pair works in either format.
+
+---
+
+## CORRECTION (2026-07-21, audit-fix run)
+
+The `Super_Duper_Lustify_Final` workflow described above is **no longer a
+registered app workflow.** The `workflows/` library was swapped to the current
+Lustify* / DR34ML* set in commit `b018876` ("feat(comfy): workflow library
+swap"). The `Super_Duper_Lustify_Final.json` + `.manifest.json` pair now lives
+ONLY under `test/fixtures/` (consumed by `test/unit/comfy-core.test.js` and
+`test/renderer/video-panel.test.jsx`); no runtime code or sidecar references it.
+Do not go looking for it in `workflows/` — the app does not offer it.
+Everything above about the conversion pipeline, seeds, and manifest vocabulary
+still holds; only the specific file registration is stale.
