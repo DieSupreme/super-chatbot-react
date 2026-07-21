@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef, useEffect, useLayoutEffect } from 'react';
+import React, { useState, useMemo, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import api from '../api.js';
 import { extractText } from '../models.js';
 import { Markdown, parseSegments } from '../markdown.jsx';
@@ -68,7 +68,7 @@ function EditCard({ path, content, onToast }) {
 }
 
 // ---------- generated-image bubble content ----------
-function GenImage({ image, prompt, onToast }) {
+function GenImage({ image, prompt, onToast, onMediaLoad }) {
   const url = `data:${image.mime};base64,${image.b64}`;
   const save = async () => {
     const s = await api.saveImage({ b64: image.b64, mime: image.mime });
@@ -76,7 +76,7 @@ function GenImage({ image, prompt, onToast }) {
   };
   return (
     <>
-      <img className="gen-img" src={url} alt={prompt} />
+      <img className="gen-img" src={url} alt={prompt} onLoad={onMediaLoad} />
       <div className="gen-actions"><button onClick={save}>Save image</button></div>
     </>
   );
@@ -85,7 +85,7 @@ function GenImage({ image, prompt, onToast }) {
 // ---------- ComfyUI video (on disk; loaded via IPC on mount) ----------
 // Only the path lives in message state; bytes come over IPC as a data: URI
 // (CSP allows media-src data:, nothing else).
-function VideoMsg({ path, onToast }) {
+function VideoMsg({ path, onToast, onMediaLoad }) {
   const [vid, setVid] = useState(null);      // { b64, mime } | 'missing'
   useEffect(() => {
     let alive = true;
@@ -98,7 +98,7 @@ function VideoMsg({ path, onToast }) {
   if (!vid) return <span className="dots">loading video</span>;
   return (
     <>
-      <video className="gen-vid" controls loop src={`data:${vid.mime};base64,${vid.b64}`} />
+      <video className="gen-vid" controls loop src={`data:${vid.mime};base64,${vid.b64}`} onLoadedData={onMediaLoad} />
       <div className="gen-actions">
         <span className="sd-file" title={path}>{path.split(/[\\/]/).pop()}</span>
       </div>
@@ -113,7 +113,7 @@ function VideoMsg({ path, onToast }) {
 // it lands. One <img> updated in place — frames NEVER append new messages —
 // and the card itself subscribes to the preview/progress channels so frame
 // churn stays out of the message array. Never persisted (transient by kind).
-function GenCard({ m, onToast }) {
+function GenCard({ m, onToast, onMediaLoad }) {
   const [progress, setProgress] = useState(null);
   const [preview, setPreview] = useState(null);    // latest frame { b64, mime }
   useEffect(() => {
@@ -131,7 +131,7 @@ function GenCard({ m, onToast }) {
     <div className="gen-live">
       {preview && (
         <img className="gen-img gen-live-img" alt="live preview"
-          src={`data:${preview.mime};base64,${preview.b64}`} />
+          src={`data:${preview.mime};base64,${preview.b64}`} onLoad={onMediaLoad} />
       )}
       <div className="vid-progress-meta">
         <span>{(progress && progress.phase) || 'queued…'}</span>
@@ -148,7 +148,7 @@ function GenCard({ m, onToast }) {
 // ---------- local SD image (on disk; loaded via IPC on mount) ----------
 // Only the file path lives in message state — pixels are fetched when the
 // bubble mounts and stay in this component's local state.
-function SdImage({ path, prompt, onToast }) {
+function SdImage({ path, prompt, onToast, onMediaLoad }) {
   const [img, setImg] = useState(null);      // { b64, mime } | 'missing'
   useEffect(() => {
     let alive = true;
@@ -165,7 +165,7 @@ function SdImage({ path, prompt, onToast }) {
   };
   return (
     <>
-      <img className="gen-img" src={`data:${img.mime};base64,${img.b64}`} alt={prompt} />
+      <img className="gen-img" src={`data:${img.mime};base64,${img.b64}`} alt={prompt} onLoad={onMediaLoad} />
       <div className="gen-actions">
         <button onClick={save}>Save a copy</button>
         <span className="sd-file" title={path}>{path.split(/[\\/]/).pop()}</span>
@@ -175,12 +175,15 @@ function SdImage({ path, prompt, onToast }) {
 }
 
 // ---------- one message ----------
-function MessageBubble({ m, isLatestAi, isStreamingAny, onRetry, onRegenerate, onEditLast, onImageAction, onToast }) {
+function MessageBubble({ m, isLatestAi, isStreamingAny, onRetry, onRegenerate, onEditLast, onImageAction, onMediaLoad, onToast }) {
   const [copied, setCopied] = useState(false);
   const isUser = m.role === 'user';
-  // discriminator (old conversations have no `kind`; imagePath marks SD results)
+  // discriminator (old conversations have no `kind`; imagePath marks SD results,
+  // m.image marks an inline OpenRouter-generated image). An OpenRouter image
+  // carries neither kind nor imagePath, so without m.image it was misclassified
+  // as chat — and its Regenerate ran a paid TEXT completion instead of an image.
   const isVideo = m.kind === 'video' || (!!m.videoPath && m.kind !== 'chat');
-  const isImage = !isVideo && (m.kind === 'image' || (!!m.imagePath && m.kind !== 'chat'));
+  const isImage = !isVideo && (m.kind === 'image' || !!m.image || (!!m.imagePath && m.kind !== 'chat'));
   const rawText = isUser ? extractText(m.content) : (m.content || '');
 
   // parse once per content change; segments feed Markdown, the zip bar, and edit cards
@@ -206,15 +209,15 @@ function MessageBubble({ m, isLatestAi, isStreamingAny, onRetry, onRegenerate, o
   if (m.error) {
     body = <span className="err">{m.error}</span>;
   } else if (m.kind === 'gen') {
-    body = <GenCard m={m} onToast={onToast} />;
+    body = <GenCard m={m} onToast={onToast} onMediaLoad={onMediaLoad} />;
   } else if (isVideo && m.videoPath) {
-    body = <VideoMsg path={m.videoPath} onToast={onToast} />;
+    body = <VideoMsg path={m.videoPath} onToast={onToast} onMediaLoad={onMediaLoad} />;
   } else if (m.imagePending) {
     body = <span className="dots">generating image</span>;
   } else if (m.image) {
-    body = <GenImage image={m.image} prompt={rawText} onToast={onToast} />;
+    body = <GenImage image={m.image} prompt={rawText} onToast={onToast} onMediaLoad={onMediaLoad} />;
   } else if (m.imagePath) {
-    body = <SdImage path={m.imagePath} prompt={rawText} onToast={onToast} />;
+    body = <SdImage path={m.imagePath} prompt={rawText} onToast={onToast} onMediaLoad={onMediaLoad} />;
   } else if (!isUser && m.streaming) {
     body = m.fresh ? <span className="dots">thinking</span> : <span className="stream-text">{m.content}</span>;
   } else if (!isUser) {
@@ -284,8 +287,10 @@ function MessageBubble({ m, isLatestAi, isStreamingAny, onRetry, onRegenerate, o
 
       {/* image messages route to Forge via the SD panel — never to chat.
           Replay actions need the stored params; inpaint replay additionally
-          needs the in-memory mask (gone after an app restart). */}
-      {isImage && !isStreamingAny && (
+          needs the in-memory mask (gone after an app restart). These Forge
+          actions require a disk-backed image (imagePath); an inline OpenRouter
+          image (m.image, no path) gets only Copy + its own Save button. */}
+      {isImage && m.imagePath && !isStreamingAny && (
         <div className="msg-actions">
           {m.genParams && (m.genParams.mode !== 'inpaint' || m.genParams.maskData) && <>
             <button title="Same settings, new seed" onClick={() => onImageAction(m, 'regenerate')}>↻ Regenerate</button>
@@ -351,10 +356,19 @@ export default function ChatLog({ messages, emptyVariant, onStarter, isStreaming
     if (el && atBottomRef.current) el.scrollTop = el.scrollHeight;
   }, [messages]);
 
+  // Media (SD/Comfy image, video, live preview) loads its pixels asynchronously
+  // AFTER mount and grows the bubble by hundreds of px with no message change,
+  // so the [messages] pin above misses it. Re-pin on the media's own load event
+  // if the user was still at the bottom.
+  const keepBottom = useCallback(() => {
+    const el = logRef.current;
+    if (el && atBottomRef.current) el.scrollTop = el.scrollHeight;
+  }, []);
+
   const lastAiUid = [...messages].reverse().find(m => m.role === 'assistant' && !m.streaming && !m.error)?.uid;
 
   return (
-    <>
+    <div className="log-wrap">
       <div id="log" ref={logRef} onScroll={onScroll}>
         {!messages.length
           ? <EmptyState variant={emptyVariant} onStarter={onStarter} />
@@ -364,6 +378,7 @@ export default function ChatLog({ messages, emptyVariant, onStarter, isStreaming
                 isStreamingAny={isStreaming}
                 onRetry={onRetryLast} onRegenerate={onRegenerate} onEditLast={onEditLast}
                 onImageAction={onImageAction}
+                onMediaLoad={keepBottom}
                 onToast={onToast} />
             ))}
       </div>
@@ -371,6 +386,6 @@ export default function ChatLog({ messages, emptyVariant, onStarter, isStreaming
         <button id="scrollBtn" title="Scroll to latest"
           onClick={() => { const el = logRef.current; el.scrollTop = el.scrollHeight; }}>↓</button>
       )}
-    </>
+    </div>
   );
 }

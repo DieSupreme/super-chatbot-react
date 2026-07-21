@@ -53,11 +53,16 @@ function registerComfyIpc(app, getWin) {
   let status = 'stopped';           // 'stopped' | 'starting' | 'running'
   let startTimer = null;
   let jobActive = false;
+  let jobAbort = null;              // AbortController for the running job's completion poll
   let previewHintShown = false;     // the no-preview-frames nudge logs once per session
   const logRing = [];
 
   function setStatus(next, message) {
     if (status === next && !message) return;
+    // The node list can differ across a (re)start, so a stale /object_info cache
+    // must not survive a transition to stopped (covers the probe-driven path in
+    // comfy:status and the process-exit path, not just explicit stopComfy).
+    if (next === 'stopped') objectInfoCache.clear();
     status = next;
     send('comfy:status', { status, url: baseUrl(), managed: !!proc, ...(message ? { message } : {}) });
   }
@@ -74,12 +79,20 @@ function registerComfyIpc(app, getWin) {
 
   async function stopComfy() {
     stopStartPoll();
+    if (jobAbort) jobAbort.abort();   // settle a running job's poll so jobActive releases
     objectInfoCache.clear();          // node list can differ on next boot
     if (proc) {
       const pid = proc.pid;
       pushLog(`[app] stopping ComfyUI (pid ${pid})`);
       sdCore.killTree(pid);                 // taskkill /T /F — a plain kill orphans python on 8188
       proc = null;
+    } else if (await probe(1000)) {
+      // Server is up but we didn't spawn it — we can't (and shouldn't) kill an
+      // externally-managed ComfyUI. Report it as still running so a GPU claim by
+      // the other backend refuses instead of launching alongside it.
+      pushLog('[app] ComfyUI is running but was not started by this app — leaving it alone');
+      setStatus('running');
+      return { ok: false, unmanaged: true, running: true, error: 'ComfyUI is running but was started outside this app — stop it there first' };
     }
     const { host, port } = urlHostPort();
     const portFree = await sdCore.waitPortFree(host, port);
@@ -313,6 +326,7 @@ function registerComfyIpc(app, getWin) {
   ipcMain.handle('comfy:generate', async (_e, { workflow, values }) => {
     if (jobActive) return { ok: false, error: 'a generation is already running' };
     jobActive = true;
+    jobAbort = new AbortController();
     const t0 = Date.now();
     let ws = null, poll = null, sendPreview = null;
     // per-job preview evidence: frames received off the socket vs forwarded
@@ -411,37 +425,69 @@ function registerComfyIpc(app, getWin) {
       }
       const { prompt_id: promptId } = await res.json();
 
-      // completion: poll /history — works whether or not the WS survives
+      // completion: poll /history — works whether or not the WS survives. The
+      // poll MUST settle even if the server dies/restarts/stops mid-job, or
+      // jobActive would stick true forever and lock out BOTH backends until an
+      // app restart. It rejects when the user stops the job (jobAbort), after
+      // too many consecutive unreachable polls, or when the promptId is gone
+      // from both /history and /queue (a restart wipes in-memory history).
+      const MAX_UNREACHABLE = 20;   // ~30s of consecutive failures at 1500ms
+      const MAX_GONE = 10;          // promptId absent from history AND queue
       const history = await new Promise((resolve, reject) => {
-        let done = false;
+        let done = false, unreachable = 0, gone = 0;
+        const finish = (fn, arg) => { if (!done) { done = true; fn(arg); } };
         poll = setInterval(async () => {
           if (done) return;
+          if (jobAbort && jobAbort.signal.aborted) { finish(reject, new Error('generation stopped')); return; }
           try {
             const h = await cfetch(`/history/${promptId}`, { timeoutMs: 5000 });
-            if (!h.ok) return;
+            if (!h.ok) { if (++unreachable >= MAX_UNREACHABLE) finish(reject, new Error('ComfyUI became unreachable during the job')); return; }
+            unreachable = 0;
             const j = await h.json();
             const entry = j[promptId];
-            if (!entry) return;
+            if (!entry) {
+              // not in history — could be queued still, or the server restarted
+              // and lost it. Confirm against the queue before giving up.
+              let inQueue = false;
+              try {
+                const q = await cfetch('/queue', { timeoutMs: 5000 });
+                if (q.ok) {
+                  const qj = await q.json();
+                  const has = (rows) => Array.isArray(rows) && rows.some(r => Array.isArray(r) && r.some(x => x === promptId || (x && x.prompt_id === promptId)));
+                  inQueue = has(qj.queue_running) || has(qj.queue_pending);
+                }
+              } catch (_) {}
+              if (inQueue) { gone = 0; } else if (++gone >= MAX_GONE) { finish(reject, new Error('the job disappeared from ComfyUI (it may have restarted)')); }
+              return;
+            }
+            gone = 0;
             const st = entry.status || {};
             if (st.status_str === 'error') {
-              done = true;
               const errMsg = (entry.status.messages || [])
                 .filter(m => m[0] === 'execution_error')
                 .map(m => (m[1] && (m[1].exception_message || '')).slice(0, 300)).join('; ');
-              reject(new Error(errMsg || 'workflow execution failed'));
+              finish(reject, new Error(errMsg || 'workflow execution failed'));
             } else if (entry.outputs && Object.keys(entry.outputs).length) {
-              done = true;
-              resolve(entry);
+              finish(resolve, entry);
             }
-          } catch (_) {}
+          } catch (_) {
+            if (++unreachable >= MAX_UNREACHABLE) finish(reject, new Error('ComfyUI became unreachable during the job'));
+          }
         }, 1500);
       });
+
+      // deterministic output pick: the last node ComfyUI reported as executed
+      // (from history messages) wins the no-pin fallback, not integer-key order
+      const executed = (history.status && Array.isArray(history.status.messages) ? history.status.messages : [])
+        .filter(m => m[0] === 'executed' && m[1] && m[1].node != null)
+        .map(m => String(m[1].node));
+      const lastNode = executed.length ? executed[executed.length - 1] : undefined;
 
       // find THE result file — the manifest can pin the SaveImage node whose
       // files count ("output": "<node id>"); multi-stage pipelines also save
       // intermediates and those must never win
       const media = core.workflowMedia(manifest);
-      const { pick, fallback } = core.pickHistoryOutput(history.outputs, media, manifest.output);
+      const { pick, fallback } = core.pickHistoryOutput(history.outputs, media, manifest.output, lastNode);
       if (fallback) pushLog(`[app] WARNING: manifest output node ${manifest.output} produced no files — using all outputs`);
       if (!pick) return { ok: false, error: 'workflow finished but produced no files' };
 
@@ -467,6 +513,7 @@ function registerComfyIpc(app, getWin) {
       if (sendPreview) sendPreview.close();
       if (ws) ws.close();
       jobActive = false;
+      jobAbort = null;
       if (previewStats.received) {
         pushLog(`[app] preview frames: ${previewStats.received} received (${Math.round(previewStats.bytes / 1024)} KB${previewStats.dims ? ', ' + previewStats.dims : ''}), ${previewStats.forwarded} forwarded to panel`);
       } else if (previewStats.sampled && !previewHintShown) {
@@ -539,7 +586,14 @@ function registerComfyIpc(app, getWin) {
   // so the workflow's LoadImage select can use it as e.g. the i2v start image
   ipcMain.handle('comfy:uploadImage', async (_e, p) => {
     try {
-      const r = await core.uploadImage(baseUrl(), path.resolve(String(p || '')));
+      // Containment: only allow uploading files from the app's own output dir
+      // (same rule as sd:readImage / comfy:readVideo), so a compromised renderer
+      // can't push arbitrary local files into ComfyUI's input folder (where
+      // /view?type=input would let them be read back out).
+      const dir = path.resolve(readSettings().sdImageDir);
+      const full = path.resolve(String(p || ''));
+      if (full !== dir && !full.startsWith(dir + path.sep)) return { ok: false, error: 'not in the output directory' };
+      const r = await core.uploadImage(baseUrl(), full);
       pushLog('[app] uploaded to ComfyUI input: ' + r.name);
       return { ok: true, name: r.name };
     } catch (err) {

@@ -97,7 +97,10 @@ function spawnForge(root) {
       cwd: layout.root, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe']
     });
   }
-  return spawn('bash', ['webui.sh'], { cwd: layout.base, env, stdio: ['ignore', 'pipe', 'pipe'] });
+  // detached:true makes the child a process-group leader so killTree's
+  // process.kill(-pid) reaches the python webui.sh spawns; without it the group
+  // kill throws ESRCH and only the bash wrapper dies, orphaning python on 7860.
+  return spawn('bash', ['webui.sh'], { cwd: layout.base, env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
 }
 
 // ---------- request-body sanitizer ----------

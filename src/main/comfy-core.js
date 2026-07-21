@@ -427,7 +427,7 @@ function uiGraphToApi(graph, info) {
     // rgthree's Power Lora Loader stores loras as named OBJECT widgets, not
     // positional values — each { lora } object becomes a lora_N input, the
     // shape its API-format export uses
-    if (n.type === 'Power Lora Loader (rgthree)') {
+    if (n.type === 'Power Lora Loader (rgthree)' && Array.isArray(wv)) {
       let li = 0;
       for (const v of wv) if (v && typeof v === 'object' && v.lora) inputs['lora_' + (++li)] = v;
     }
@@ -446,11 +446,20 @@ function uiGraphToApi(graph, info) {
 // multi-stage pipeline saves intermediates too — those must never win), then
 // prefer the extension matching the workflow's media. Returns
 // { pick, fallback } — fallback=true means the pinned node produced nothing.
-function pickHistoryOutput(outputs, media, outputNode) {
-  let src = outputs || {};
+//
+// Without a pin, ranking is deterministic instead of relying on JS integer-key
+// iteration order (which is ascending-numeric and would let a low-id
+// intermediate save beat the real output): prefer the last-EXECUTED node
+// (comfy.js derives it from history), then final ('output'-type) files over
+// 'temp'/'input' previews.
+function pickHistoryOutput(outputs, media, outputNode, lastNode) {
+  const all = outputs || {};
   const want = outputNode != null ? String(outputNode) : null;
-  const fallback = !!(want && !src[want]);
-  if (want && src[want]) src = { [want]: src[want] };
+  const fallback = !!(want && !all[want]);
+  let src;
+  if (want && all[want]) src = { [want]: all[want] };
+  else if (!want && lastNode != null && all[String(lastNode)]) src = { [String(lastNode)]: all[String(lastNode)] };
+  else src = all;
   const produced = [];
   for (const nodeOut of Object.values(src)) {
     for (const arr of Object.values(nodeOut || {})) {
@@ -458,9 +467,12 @@ function pickHistoryOutput(outputs, media, outputNode) {
       for (const item of arr) if (item && item.filename) produced.push(item);
     }
   }
+  // final results are type 'output'; previews/intermediates are 'temp'/'input'
+  const finals = produced.filter(f => f.type === 'output' || f.type === undefined);
+  const pool = finals.length ? finals : produced;
   const isVideo = (f) => /\.(mp4|webm|mov|avi|gif|webp)$/i.test(f.filename);
   const isImage = (f) => /\.(png|jpe?g|webp|bmp)$/i.test(f.filename);
-  const pick = (media === 'image' ? produced.find(isImage) : produced.find(isVideo)) || produced[0] || null;
+  const pick = (media === 'image' ? pool.find(isImage) : pool.find(isVideo)) || pool[0] || null;
   return { pick, fallback };
 }
 

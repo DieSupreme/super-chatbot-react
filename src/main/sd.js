@@ -33,7 +33,11 @@ function registerSdIpc(app, getWin) {
       method,
       headers: body ? { 'Content-Type': 'application/json' } : undefined,
       body: body ? JSON.stringify(body) : undefined,
-      signal: AbortSignal.timeout(timeoutMs)
+      // timeoutMs <= 0 means no client-side deadline (used for the generation
+      // POST, which can legitimately run many minutes on slow hires batches — a
+      // fixed cap aborted the request while Forge kept generating). A crashed
+      // server still drops the socket, and Stop routes through /interrupt.
+      ...(timeoutMs > 0 ? { signal: AbortSignal.timeout(timeoutMs) } : {})
     });
   }
   const offline = (err) => ({
@@ -140,7 +144,8 @@ function registerSdIpc(app, getWin) {
 
   // mutual exclusion with ComfyUI: registered stopper no-ops when unmanaged
   gpuLock.register('Forge', {
-    stop: async () => { if (proc) await stopForge(); },
+    // return the stop result so a claim can refuse if the port didn't free
+    stop: async () => (proc ? stopForge() : { ok: true }),
     isBusy: () => jobActive,
     isRunning: () => !!proc
   });
@@ -329,7 +334,7 @@ function registerSdIpc(app, getWin) {
       } catch (_) {}
     }, 500);
     try {
-      const res = await sdFetch(route, { method: 'POST', body, timeoutMs: 600000 });
+      const res = await sdFetch(route, { method: 'POST', body, timeoutMs: 0 });
       if (!res.ok) {
         const msg = apiErrorText((await res.text()).slice(0, 800));
         return { ok: false, status: res.status, error: msg.slice(0, 500) };

@@ -565,6 +565,30 @@ test('pickHistoryOutput: manifest output node pins the result; media filters; fa
   assert.equal(core.pickHistoryOutput({}, 'image', null).pick, null);
 });
 
+test('pickHistoryOutput: no pin uses the last-executed node, not integer-key order', () => {
+  // intermediate save (node 5, lower id) and the real final (node 40). Without
+  // a pin, ascending-key order would wrongly pick node 5 first — lastNode wins.
+  const outputs = {
+    '5':  { images: [{ filename: 'stage1_intermediate.png', type: 'output' }] },
+    '40': { images: [{ filename: 'final_result.png', type: 'output' }] }
+  };
+  const withLast = core.pickHistoryOutput(outputs, 'image', null, '40');
+  assert.equal(withLast.pick.filename, 'final_result.png');
+  assert.equal(withLast.fallback, false);
+  // a bogus lastNode (not in outputs) simply falls through to all outputs
+  assert.ok(core.pickHistoryOutput(outputs, 'image', null, '999').pick);
+});
+
+test('pickHistoryOutput: final (type "output") files beat temp/input previews', () => {
+  const outputs = {
+    '7': { images: [
+      { filename: 'preview.png', type: 'temp' },
+      { filename: 'result.png', type: 'output' }
+    ] }
+  };
+  assert.equal(core.pickHistoryOutput(outputs, 'image', '7').pick.filename, 'result.png');
+});
+
 // toy RFC6455 server: handshake, then a text frame, a fragmented text
 // message, and a ping — records whether the client answered with a pong
 function makeWsServer() {
