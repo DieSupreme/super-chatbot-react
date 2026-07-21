@@ -99,15 +99,19 @@ function registerTerminalIpc(app, getParentWindow) {
   });
 
   // On quit: keep pinned sessions alive in the daemon, kill the rest, disconnect.
-  // We defer the quit once to let killUnpinned round-trip before the socket closes.
+  // We defer the quit once to let killUnpinned round-trip before the socket
+  // closes — but race it against a short timeout so a dead/wedged daemon (whose
+  // killUnpinned would re-run the spawn/poll loop or never reply) can't hang the
+  // quit indefinitely.
   app.on('before-quit', (e) => {
     if (quitHandled || !client) return;
     quitHandled = true;
     e.preventDefault();
-    Promise.resolve()
-      .then(() => client.killUnpinned())
-      .catch(() => {})
-      .then(() => { try { client.disconnect(); } catch (_) {} app.quit(); });
+    const withTimeout = Promise.race([
+      Promise.resolve().then(() => client.killUnpinned()).catch(() => {}),
+      new Promise(r => setTimeout(r, 2000))
+    ]);
+    withTimeout.then(() => { try { client.disconnect(); } catch (_) {} app.quit(); });
   });
 }
 

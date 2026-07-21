@@ -33,6 +33,7 @@ function client(sock) {
   let reqId = 0; const pending = new Map(); const data = []; const exits = [];
   sock.on('data', createDecoder(m => {
     if (m.t === 'reply') { const p = pending.get(m.reqId); if (p) { pending.delete(m.reqId); p(m.result); } }
+    else if (m.t === 'error') { const p = pending.get(m.reqId); if (p) { pending.delete(m.reqId); p({ error: m.error }); } }
     else if (m.t === 'data') data.push(m);
     else if (m.t === 'exit') exits.push(m);
   }));
@@ -58,6 +59,49 @@ test('daemon: create, reattach replay, data delivery, kill', async () => {
     await wait(150);
     assert.ok(c.data.some(d => d.id === created.id && Buffer.from(d.data, 'base64').toString('utf8').includes('ECHO:hi')));
     sock.end();
+  } finally { child.kill(); }
+});
+
+test('daemon: a failed create replies with an error and keeps the daemon (and other sessions) alive', { timeout: 15000 }, async () => {
+  const { child, pipe, udir } = bootDaemon();
+  try {
+    const sock = await connect(pipe);
+    const lock = JSON.parse(fs.readFileSync(path.join(udir, 'terminal-daemon.json'), 'utf8'));
+    const c = client(sock);
+    c.hello(lock.token);
+    // a healthy session first
+    const good = await c.req({ t: 'create', opts: { label: 'good' } });
+    assert.strictEqual(typeof good.id, 'number');
+    // a create that makes the fake pty throw — must not crash the daemon
+    const bad = await c.req({ t: 'create', opts: { shell: '<<FAIL>>' } });
+    assert.ok(bad && bad.error, 'failed create returns an error result, not a crash');
+    // the daemon is still serving and the good session survives
+    const rows = await c.req({ t: 'list' });
+    assert.ok(rows.some(r => r.id === good.id));
+    sock.end();
+  } finally { child.kill(); }
+});
+
+test('daemon: kills unpinned sessions after the last client disconnects (pinned survive)', { timeout: 15000 }, async () => {
+  const { child, pipe, udir } = bootDaemon();
+  try {
+    const sock = await connect(pipe);
+    const lock = JSON.parse(fs.readFileSync(path.join(udir, 'terminal-daemon.json'), 'utf8'));
+    const c = client(sock);
+    c.hello(lock.token);
+    const keep = await c.req({ t: 'create', opts: { label: 'keep' } });
+    await c.req({ t: 'create', opts: { label: 'drop' } });
+    await c.req({ t: 'setPinned', id: keep.id, pinned: true });
+    sock.end();   // last client gone — grace timer (5s) should reap unpinned
+    // reconnect after the grace period and confirm only the pinned one remains
+    await wait(6000);
+    const sock2 = await connect(pipe);
+    const c2 = client(sock2);
+    c2.hello(lock.token);
+    const rows = await c2.req({ t: 'list' });
+    assert.strictEqual(rows.length, 1);
+    assert.strictEqual(rows[0].id, keep.id);
+    sock2.end();
   } finally { child.kill(); }
 });
 

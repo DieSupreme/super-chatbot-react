@@ -78,3 +78,27 @@ test('a session that exits fires exit and is removed', async () => {
   assert.ok(exits.some(p => p.id === id));
   assert.strictEqual(sm.size(), 0);
 });
+
+test('spawns shells with ELECTRON_RUN_AS_NODE and the daemon pipe vars stripped', () => {
+  let seenEnv = null;
+  const recordingPty = { spawn: (shell, args, opts) => { seenEnv = opts.env; return fakePty.spawn(shell, args, opts); } };
+  const prev = { ...process.env };
+  process.env.ELECTRON_RUN_AS_NODE = '1';
+  process.env.TERM_PIPE_NAME = 'sc-test-pipe';
+  process.env.TERM_FAKE_PTY = '/some/path';
+  process.env.KEEP_ME = 'yes';
+  try {
+    const sm = createSessionManager({ pty: recordingPty });
+    sm.create({});
+    assert.ok(seenEnv, 'pty.spawn received an env');
+    assert.strictEqual(seenEnv.ELECTRON_RUN_AS_NODE, undefined, 'ELECTRON_RUN_AS_NODE stripped');
+    assert.strictEqual(seenEnv.TERM_PIPE_NAME, undefined, 'TERM_PIPE_NAME stripped');
+    assert.strictEqual(seenEnv.TERM_FAKE_PTY, undefined, 'TERM_FAKE_PTY stripped');
+    assert.strictEqual(seenEnv.KEEP_ME, 'yes', 'unrelated env preserved');
+    sm.killAll();
+  } finally {
+    for (const k of ['ELECTRON_RUN_AS_NODE', 'TERM_PIPE_NAME', 'TERM_FAKE_PTY', 'KEEP_ME']) {
+      if (prev[k] === undefined) delete process.env[k]; else process.env[k] = prev[k];
+    }
+  }
+});

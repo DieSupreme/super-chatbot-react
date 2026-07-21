@@ -30,6 +30,18 @@ function createSessionManager(deps = {}) {
   const listeners = { data: new Set(), exit: new Set() };
   const emit = (type, payload) => { for (const cb of [...listeners[type]]) cb(payload); };
 
+  // The daemon runs as plain node via ELECTRON_RUN_AS_NODE=1; if that (and the
+  // daemon's own pipe var) leaked into a shell, any Electron app launched from
+  // it (`code .`, this app's exe) would run as bare Node and misbehave. Strip
+  // them from the child env.
+  function shellEnv() {
+    const env = { ...process.env };
+    delete env.ELECTRON_RUN_AS_NODE;
+    delete env.TERM_PIPE_NAME;
+    delete env.TERM_FAKE_PTY;
+    return env;
+  }
+
   function create(opts = {}) {
     const shell = resolveShell(opts.shell);
     const cols = Number.isInteger(opts.cols) && opts.cols > 0 ? opts.cols : 80;
@@ -37,7 +49,7 @@ function createSessionManager(deps = {}) {
     const requested = opts.cwd ? String(opts.cwd).trim() : '';
     const cwdOk = requested ? isDir(requested) : false;
     const cwd = cwdOk ? requested : os.homedir();
-    const proc = pty.spawn(shell, [], { name: 'xterm-256color', cols, rows, cwd, env: process.env });
+    const proc = pty.spawn(shell, [], { name: 'xterm-256color', cols, rows, cwd, env: shellEnv() });
     const id = ++idCounter;
     const session = {
       id, proc, ring: '', pinned: false,

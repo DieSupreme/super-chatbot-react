@@ -22,6 +22,11 @@ function createDaemonClient(cfg) {
   const dataCbs = new Set();
   const exitCbs = new Set();
 
+  // Track which session ids this client has reattached to, so if the daemon
+  // dies we can synthesize exit events for them (otherwise open terminals just
+  // freeze silently — no "[process exited]", keystrokes swallowed).
+  const attachedIds = new Set();
+
   function attach(s) {
     sock = s;
     const sd = new StringDecoder('utf8');
@@ -29,10 +34,21 @@ function createDaemonClient(cfg) {
       if (m.t === 'reply') { const p = pending.get(m.reqId); if (p) { pending.delete(m.reqId); p.resolve(m.result); } }
       else if (m.t === 'error') { const p = pending.get(m.reqId); if (p) { pending.delete(m.reqId); p.reject(new Error(m.error)); } }
       else if (m.t === 'data') { const d = Buffer.from(m.data, 'base64').toString('utf8'); for (const cb of dataCbs) cb({ id: m.id, data: d }); }
-      else if (m.t === 'exit') { for (const cb of exitCbs) cb({ id: m.id, exitCode: m.exitCode }); }
+      else if (m.t === 'exit') { attachedIds.delete(m.id); for (const cb of exitCbs) cb({ id: m.id, exitCode: m.exitCode }); }
     });
     s.on('data', (buf) => feed(sd.write(buf)));
-    s.on('close', () => { sock = null; ready = null; for (const p of pending.values()) p.reject(new Error('daemon disconnected')); pending.clear(); });
+    s.on('close', () => {
+      // Ignore a stale socket's late close so it can't clobber a healthy
+      // replacement connection's state.
+      if (sock !== s) return;
+      sock = null; ready = null;
+      for (const p of pending.values()) p.reject(new Error('daemon disconnected'));
+      pending.clear();
+      // Tell the renderer every attached session is gone, so its terminal shows
+      // "[process exited]" instead of hanging.
+      const ids = [...attachedIds]; attachedIds.clear();
+      for (const id of ids) for (const cb of exitCbs) cb({ id, exitCode: null });
+    });
     s.on('error', () => {});
   }
 
@@ -73,10 +89,25 @@ function createDaemonClient(cfg) {
     try { fs.unlinkSync(lockfilePath(userDataDir)); } catch (_) {}
   }
 
+  // Cheap server-identity check before handing over the token: confirm the
+  // lockfile's daemon pid is a process THIS user owns. process.kill(pid, 0)
+  // succeeds only for a live process we can signal — a foreign process
+  // (another local user impersonating the pipe to steal the token) yields EPERM,
+  // a dead pid yields ESRCH; both refuse. The lockfile itself lives in our
+  // ACL-protected userData, so a foreign process can't forge it. NOTE: this is
+  // not full server-identity proof — GetNamedPipeServerProcessId + SID matching
+  // (native) would be; see docs/agent/known-lows.md.
+  function serverLooksOurs() {
+    const lock = readLockfile();
+    if (!lock || !lock.pid) return false;
+    try { process.kill(lock.pid, 0); return true; } catch (_) { return false; }
+  }
+
   function hello() {
     return new Promise((resolve, reject) => {
       const s = sock;
       if (!s) { reject(new Error('daemon not connected')); return; }
+      if (!serverLooksOurs()) { reject(new Error('daemon identity unverified — refusing to send token')); return; }
       let done = false;
       const cleanup = () => {
         clearTimeout(timer);
@@ -106,8 +137,10 @@ function createDaemonClient(cfg) {
     });
   }
 
+  // Tear down the current socket without touching `ready`: during the retry
+  // loop the memoized ensure() promise is still in flight and must stay shared,
+  // or a concurrent ensure()/call() would open a second, duplicate connection.
   function resetConnection() {
-    ready = null;
     try { if (sock) sock.destroy(); } catch (_) {}
     sock = null;
     for (const p of pending.values()) p.reject(new Error('daemon disconnected'));
@@ -122,7 +155,7 @@ function createDaemonClient(cfg) {
           const s = await connectOrSpawn();
           attach(s);
           await hello();
-          return;
+          return;               // success — keep `ready` memoized
         } catch (err) {
           resetConnection();
           if (attempt === 0) {
@@ -132,6 +165,7 @@ function createDaemonClient(cfg) {
             }
             continue;
           }
+          ready = null;          // gave up — allow a later ensure() to retry
           throw err;
         }
       }
@@ -153,11 +187,11 @@ function createDaemonClient(cfg) {
   return {
     ensure,
     create: (opts) => call({ t: 'create', opts: opts || {} }),
-    reattach: (id) => call({ t: 'reattach', id }).then(r => ({
-      ring: Buffer.from(r.ring || '', 'base64').toString('utf8'),
-      alive: r.alive !== false
-    })),
-    detach: (id) => fire({ t: 'detach', id }),
+    reattach: (id) => call({ t: 'reattach', id }).then(r => {
+      if (r.alive !== false) attachedIds.add(id);
+      return { ring: Buffer.from(r.ring || '', 'base64').toString('utf8'), alive: r.alive !== false };
+    }),
+    detach: (id) => { attachedIds.delete(id); fire({ t: 'detach', id }); },
     write: (id, data) => fire({ t: 'write', id, data: Buffer.from(String(data), 'utf8').toString('base64') }),
     resize: (id, cols, rows) => fire({ t: 'resize', id, cols, rows }),
     kill: (id) => call({ t: 'kill', id }),

@@ -2,6 +2,11 @@
 // spawn() returns a proc that echoes writes as data, emits a banner on next tick,
 // and fires exit when killed.
 function spawn(shell, args, opts) {
+  // test hook: a shell path of '<<FAIL>>' makes spawn throw, exercising the
+  // daemon's per-request error handling (a bad create must not crash it)
+  if (shell === '<<FAIL>>' || (opts && opts.env && opts.env.TERM_FAKE_SPAWN_FAIL)) {
+    throw new Error('fake spawn failure');
+  }
   const dataCbs = [];
   const exitCbs = [];
   let killed = false;

@@ -37,6 +37,28 @@ test('spawns a daemon, creates + reattaches a session, receives echo', { timeout
   }
 });
 
+test('synthesizes an exit for attached sessions when the daemon dies (terminals do not freeze silently)', { timeout: 15000 }, async () => {
+  const { lockfilePath } = require('../../src/terminal/protocol');
+  const conf = cfg();
+  const c = createDaemonClient(conf);
+  try {
+    await c.ensure();
+    const s = await c.create({ label: 'A' });
+    await c.reattach(s.id);   // marks the session attached
+    const exits = [];
+    c.onExit(e => exits.push(e));
+    // kill the daemon out from under the client
+    const lock = JSON.parse(fs.readFileSync(lockfilePath(conf.userDataDir), 'utf8'));
+    try { process.kill(lock.pid); } catch (_) {}
+    // the socket close must synthesize an exit for the attached session
+    for (let i = 0; i < 100 && !exits.some(e => e.id === s.id); i++) await wait(50);
+    assert.ok(exits.some(e => e.id === s.id), 'an exit event was synthesized for the attached session');
+  } finally {
+    try { await c.quitAll(); } catch (_) {}
+    try { c.disconnect(); } catch (_) {}
+  }
+});
+
 test('a second client reuses the already-running daemon (list sees the session)', { timeout: 15000 }, async () => {
   const shared = cfg();
   const c1 = createDaemonClient(shared);

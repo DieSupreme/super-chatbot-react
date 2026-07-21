@@ -16,6 +16,16 @@ import { LAUNCHERS } from '../terminal/launchers.js';
 
 let instanceSeq = 0;
 const allocKey = (prefix) => `${prefix}:${++instanceSeq}`;
+// Restored pinned tabs keep their previous-run keys (e.g. "Claude:3"), but
+// instanceSeq resets to 0 each run — so seed it above the highest restored
+// suffix, or the next allocKey would mint a duplicate key (two tabs sharing one
+// React key: updates hit both, and closing one removes both while killing one).
+function bumpSeqFor(keys) {
+  for (const k of keys) {
+    const n = Number(String(k).split(':').pop());
+    if (Number.isFinite(n) && n > instanceSeq) instanceSeq = n;
+  }
+}
 
 const makeShell = (key = 'shell', label = 'Shell') => ({
   key, label, launcherKey: null, command: null,
@@ -118,7 +128,7 @@ export default function TerminalDock({ active, onToast }) {
             if (onToast) onToast(`${meta.label}: reconnected as a fresh session`, 'warn');
           }
         }
-        if (!cancelled) setInstances(built);
+        if (!cancelled) { bumpSeqFor(built.map(i => i.key)); setInstances(built); }
       } finally {
         if (!cancelled) setRestored(true);
       }
@@ -201,8 +211,13 @@ export default function TerminalDock({ active, onToast }) {
 
   const quitAll = useCallback(async () => {
     await api.term.quitAll();
-    setInstances([makeShell()]);
-    setActiveKey('shell');
+    // Bump the replacement shell's gen so its TerminalPanel (keyed on
+    // key+':'+gen) remounts — otherwise it keeps the old xterm bound to a
+    // session the daemon just killed, leaving a frozen dead terminal.
+    const fresh = makeShell();
+    fresh.gen = Date.now();
+    setInstances([fresh]);
+    setActiveKey(fresh.key);
     api.saveSettings({ pinnedTerminals: [] });
     if (onToast) onToast('All terminals stopped', 'ok');
   }, [onToast]);

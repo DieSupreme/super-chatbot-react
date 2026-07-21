@@ -169,7 +169,7 @@ export default function TerminalPanel({ active, initialCommand, initialCwd, onRe
           ring = re.ring || '';
           if (!ring) {
             await new Promise(r => setTimeout(r, 100));
-            if (disposed) return;
+            if (disposed) { api.term.detach(id); unwireSession(); return; }
             re = await api.term.reattach(id);
             if (re?.ok && re.ring) ring = re.ring;
           }
@@ -196,7 +196,7 @@ export default function TerminalPanel({ active, initialCommand, initialCwd, onRe
         // Shell banner often lands in the ring buffer after create returns — retry once.
         if (!ring) {
           await new Promise(r => setTimeout(r, 150));
-          if (disposed) return;
+          if (disposed) { api.term.detach(id); unwireSession(); return; }
           re = await api.term.reattach(id);
           if (re?.ok && re.ring) ring = re.ring;
         }
