@@ -19,7 +19,7 @@ function AttachBar({ pending, onRemove, model }) {
 
   let cls = 'attach-summary', txt = `${okFiles.length} file${okFiles.length !== 1 ? 's' : ''} · ~${tokStr} tokens`;
   if (errFiles) txt += ` · ${errFiles} skipped`;
-  if (tokens > budget) { cls += ' over'; txt += ` ⚠ may exceed ${modelName} — switch to Gemini/DeepSeek for big inputs`; }
+  if (tokens > budget) { cls += ' over'; txt += ` ⚠ may exceed ${modelName} — switch to Gemini for big inputs`; }
   else if (tokens > budget * 0.7) { cls += ' warn'; txt += ' · getting large'; }
 
   return (
@@ -60,6 +60,9 @@ export default function Composer({ input, setInput, onSend, onStop, isStreaming,
             placeholder="Type a message…  (Enter to send · Shift+Enter for newline)"
             onChange={e => setInput(e.target.value)}
             onKeyDown={e => {
+              // Don't treat Enter as send while an IME composition is active —
+              // CJK users press Enter to commit the composition, not to send.
+              if (e.isComposing || e.nativeEvent.isComposing || e.keyCode === 229) return;
               if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (!isStreaming) onSend(); }
             }} />
           <button id="send" className={isStreaming ? 'stopping' : ''}

@@ -34,7 +34,8 @@ export function modelLabel(id) {
 
 // approximate usable context per model (tokens) for the attachment warning
 export function contextBudget(id) {
-  if (id.includes('gemini') || id.includes('deepseek')) return 900000; // ~1M-token models
+  if (id.includes('gemini')) return 900000;   // ~1M-token context
+  if (id.includes('deepseek')) return 128000; // DeepSeek families are ~128K, not ~1M
   if (id.includes('opus') || id.includes('gpt')) return 180000;
   if (id.includes('grok')) return 120000;
   return 120000;

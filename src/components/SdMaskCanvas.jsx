@@ -20,6 +20,7 @@ const SdMaskCanvas = forwardRef(function SdMaskCanvas({ src, width, height, brus
   useEffect(() => {
     maskRef.current = createMask(width, height);
     undoRef.current = [];
+    bump(n => n + 1);   // re-render so the Undo button reflects the emptied stack
     repaint();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [src, width, height]);

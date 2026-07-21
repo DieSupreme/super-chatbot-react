@@ -32,6 +32,12 @@ test('contextBudget returns tiered values', () => {
   assert.equal(contextBudget('x-ai/grok-4.3'), 120000);
 });
 
+test('contextBudget gives DeepSeek its real ~128K window, not the 1M gemini tier', () => {
+  // the over-budget attachment warning must fire where the API actually fails
+  assert.equal(contextBudget('deepseek/deepseek-v4-pro'), 128000);
+  assert.equal(contextBudget('deepseek/deepseek-v4-flash'), 128000);
+});
+
 test('fmtCost formats USD', () => {
   assert.equal(fmtCost(0.0123), '$0.0123');
   assert.equal(fmtCost(0), '$0.0000');

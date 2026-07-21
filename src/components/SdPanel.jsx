@@ -323,7 +323,12 @@ export default function SdPanel({ open, onToast, onImage, onVideo, onGenStart, o
   // chat-attach paste listener in App; stopPropagation keeps the image out of
   // the chat attach bar.
   useEffect(() => {
-    if (!open || mode === 'txt2img') return;
+    // Only claim pastes while the FORGE img2img/inpaint source box is actually
+    // visible (image media, a Forge checkpoint, not txt2img). When the video
+    // panel or a ComfyUI image workflow is showing, the Forge body is unmounted
+    // — stealing the paste there would swallow Ctrl+V into an invisible box and
+    // starve App's chat-attach paste listener.
+    if (!open || mode === 'txt2img' || media !== 'image' || imageWf) return;
     const onPaste = (e) => {
       const item = Array.from((e.clipboardData || {}).items || []).find(i => i.type && i.type.startsWith('image/'));
       if (!item) return;
@@ -342,7 +347,7 @@ export default function SdPanel({ open, onToast, onImage, onVideo, onGenStart, o
     window.addEventListener('paste', onPaste, true);
     return () => window.removeEventListener('paste', onPaste, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, mode]);
+  }, [open, mode, media, imageWf]);
 
   // when a source lands, default output size to (snapped) source size
   useEffect(() => {

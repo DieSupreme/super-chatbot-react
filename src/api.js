@@ -20,17 +20,24 @@ const stubTerm = {
   onData: () => () => {},
   onExit: () => () => {}
 };
-const stubSd = {
-  status: stubFn, start: stubFn, stop: stubFn,
-  txt2img: stubFn, img2img: stubFn, interrupt: stubFn,
-  models: stubFn, samplers: stubFn, getOptions: stubFn, setModel: stubFn,
-  scanCheckpoints: stubFn, scanLoras: stubFn, readImage: stubFn,
-  onProgress: () => () => {}, onLog: () => () => {}, onStatus: () => () => {}
-};
+// Any method returns the "not in Electron" stub; event registrations return a
+// no-op disposer. A nested Proxy so a newly-added IPC method never crashes the
+// React tree when the app is opened outside Electron (the case this exists for).
+const isSubscribe = (name) => typeof name === 'string' && /^on[A-Z]/.test(name);
+const nestedStub = (extra = {}) => new Proxy(extra, {
+  get: (t, name) => {
+    if (name in t) return t[name];
+    if (isSubscribe(name)) return () => () => {};
+    return stubFn;
+  }
+});
+const stubSd = nestedStub();
+const stubComfy = nestedStub();
 const stub = new Proxy({}, {
   get: (_t, name) => {
     if (name === 'term') return stubTerm;
     if (name === 'sd') return stubSd;
+    if (name === 'comfy') return stubComfy;
     if (name === 'readClipboard') return () => '';
     if (name === 'writeClipboard') return () => {};
     if (name === 'getPathForFile') return () => null;

@@ -114,6 +114,10 @@ header button.ghost.active { color:var(--hi); border-color:var(--hi); background
 
 /* view row: sidebar · main · asides */
 .body-row { flex:1; display:flex; min-height:0; position:relative; }
+/* wraps #log + #scrollBtn so the button anchors to the LOG's right edge, not to
+   .body-row (which spans the SD panel / Files aside — the button used to float
+   over the SD panel's Generate area and steal its clicks). */
+.log-wrap { flex:1; display:flex; min-height:0; position:relative; }
 #log { flex:1; overflow-y:auto; padding:22px; display:flex; flex-direction:column; gap:16px; }
 
 /* conversations sidebar (left) */

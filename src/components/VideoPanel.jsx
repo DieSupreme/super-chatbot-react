@@ -392,6 +392,13 @@ export default function ComfyBody({ media = 'video', workflow: pinnedWf, onToast
   // (workflows/control-values.json) < this session's live edits. Stale draft
   // keys (control gone after a rescan) are dropped silently.
   useEffect(() => {
+    // Flush any pending debounced save for the PREVIOUS workflow before this
+    // effect re-seeds `values` for the new one — otherwise the [values] effect
+    // overwrites pendingSave with the new workflow's data and the last ~500ms
+    // of edits to the previous workflow are silently dropped. flushSave is a
+    // stable useCallback declared below; this callback runs post-render, so the
+    // binding is initialized by the time it executes.
+    flushSave();
     if (!wf) return;
     let alive = true;
     (async () => {
